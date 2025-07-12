@@ -76,6 +76,8 @@ TARSNAP_KEY_FILE="/path/to/tarsnap.key" # Path to your Tarsnap key file
 # Add site directory names here to exclude them from the backup process.
 # For example: EXCLUDE_SITES=("example.com.bak" "dev.example.com")
 EXCLUDE_SITES=()
+RETENTION_DAYS=14         # Number of days to keep backups
+MIN_BACKUPS_TO_KEEP=3     # Minimum number of backups to always keep per site
 # --- End Configuration ---
 
 # Set strict mode for error handling
@@ -213,6 +215,36 @@ find "$SITES_ROOT" -mindepth 1 -maxdepth 1 -type d | while read -r SITE_PATH; do
         "$SITE_PATH" \
         "$DB_DUMP_FILE"; then
         echo "  Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME"
+
+        # --- Retention Policy: Safe per-site deletion ---
+        echo "  Applying retention policy: keeping last $RETENTION_DAYS days and at least $MIN_BACKUPS_TO_KEEP backups..."
+
+        # List all archives for this site, sorted newest first
+        mapfile -t all_archives < <(tarsnap --key-file "$TARSNAP_KEY_FILE" --list-archives | grep "^${SITE_DIRNAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
+
+        for i in "${!all_archives[@]}"; do
+            archive="${all_archives[i]}"
+            # Extract date part from archive name
+            if [[ "$archive" =~ ^${SITE_DIRNAME}-([0-9]{4})-([0-9]{2})-([0-9]{2})-([0-9]{6})$ ]]; then
+                archive_date="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+                archive_epoch=$(date -d "$archive_date" +%s)
+                cutoff_epoch=$(date -d "-$RETENTION_DAYS days" +%s)
+                if (( archive_epoch < cutoff_epoch )); then
+                    if (( i >= MIN_BACKUPS_TO_KEEP )); then
+                        echo "    Deleting old archive: $archive"
+                        tarsnap --key-file "$TARSNAP_KEY_FILE" -d -f "$archive"
+                    else
+                        echo "    Keeping (minimum required): $archive"
+                    fi
+                else
+                    echo "    Keeping (within retention): $archive"
+                fi
+            else
+                echo "    Skipping unparseable archive: $archive"
+            fi
+        done
+        # --- End Retention Policy ---
+
     else
         echo "  Error: Tarsnap backup failed for site $SITE_DIRNAME. Check the log for details."
     fi
@@ -226,107 +258,4 @@ find "$SITES_ROOT" -mindepth 1 -maxdepth 1 -type d | while read -r SITE_PATH; do
 done
 
 echo "--------------------------------------------------"
-echo "WordOps site backups finished."
-echo "Timestamp: $(date)"
-
-# --- Backup Rotation Logic (tsar-style) ---
-# Configuration: adjust as needed
-TARSNAP_ROTATE_KEY="$TARSNAP_KEY_FILE"  # Use the same key as for backup
-DAILY_KEEP=30   # Number of daily backups to keep
-WEEKLY_KEEP=12  # Number of weekly backups to keep
-MONTHLY_KEEP=48 # Number of monthly backups to keep
-DOW=1           # Day of week for weekly (1=Monday)
-DOM=1           # Day of month for monthly
-
-# List all tarsnap archives
-ARCHIVE_LIST=$(tarsnap --key-file "$TARSNAP_ROTATE_KEY" --list-archives 2>/dev/null)
-
-# Parse archive names and dates (expecting format: site-YYYY-MM-DD-HHMMSS)
-declare -A ARCHIVE_DATES
-for ARCHIVE in $ARCHIVE_LIST; do
-    # Extract date from archive name
-    if [[ $ARCHIVE =~ (.+)-([0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6})$ ]]; then
-        ARCHIVE_DATES[$ARCHIVE]="${BASH_REMATCH[2]}"
-    fi
-    # else: skip archives not matching naming pattern
-done
-
-# Build a list of archives to keep
-KEEP_ARCHIVES=()
-NOW=$(date +%s)
-
-# Helper: convert date string to unix timestamp
-archive_to_unix() {
-    date -d "${1:0:10} ${1:11:2}:${1:13:2}:${1:15:2}" +%s
-}
-
-# Daily: keep most recent N
-for SITE in $(ls "$SITES_ROOT"); do
-    SITE_ARCHIVES=()
-    for ARCHIVE in "${!ARCHIVE_DATES[@]}"; do
-        if [[ $ARCHIVE == $SITE-* ]]; then
-            SITE_ARCHIVES+=("$ARCHIVE")
-        fi
-    done
-    # Sort by date descending
-    IFS=$'\n' SORTED=($(for A in "${SITE_ARCHIVES[@]}"; do echo "$A"; done | sort -r -t'-' -k2,2 -k3,3 -k4,4))
-    for ((i=0; i<${#SORTED[@]} && i<DAILY_KEEP; i++)); do
-        KEEP_ARCHIVES+=("${SORTED[$i]}")
-    done
-
-done
-
-# Weekly: keep the most recent backup for each week (on DOW), up to limit
-for SITE in $(ls "$SITES_ROOT"); do
-    WEEKLY_FOUND=0
-    for ARCHIVE in "${!ARCHIVE_DATES[@]}"; do
-        if [[ $ARCHIVE == $SITE-* ]]; then
-            DATESTR="${ARCHIVE_DATES[$ARCHIVE]}"
-            ARCHIVE_DATE="${DATESTR:0:10}"
-            DOW_ARCHIVE=$(date -d "$ARCHIVE_DATE" +%u)
-            if [[ $DOW_ARCHIVE -eq $DOW ]]; then
-                KEEP_ARCHIVES+=("$ARCHIVE")
-                ((WEEKLY_FOUND++))
-                if [[ $WEEKLY_FOUND -ge $WEEKLY_KEEP ]]; then break; fi
-            fi
-        fi
-    done
-done
-
-# Monthly: keep the most recent backup for each month (on DOM), up to limit
-for SITE in $(ls "$SITES_ROOT"); do
-    MONTHLY_FOUND=0
-    for ARCHIVE in "${!ARCHIVE_DATES[@]}"; do
-        if [[ $ARCHIVE == $SITE-* ]]; then
-            DATESTR="${ARCHIVE_DATES[$ARCHIVE]}"
-            ARCHIVE_DATE="${DATESTR:0:10}"
-            DOM_ARCHIVE=$(date -d "$ARCHIVE_DATE" +%d)
-            if [[ $DOM_ARCHIVE -eq $DOM ]]; then
-                KEEP_ARCHIVES+=("$ARCHIVE")
-                ((MONTHLY_FOUND++))
-                if [[ $MONTHLY_FOUND -ge $MONTHLY_KEEP ]]; then break; fi
-            fi
-        fi
-    done
-done
-
-# Remove duplicates from KEEP_ARCHIVES
-KEEP_ARCHIVES=($(printf "%s\n" "${KEEP_ARCHIVES[@]}" | sort -u))
-
-# Find archives to delete
-DELETE_ARCHIVES=()
-for ARCHIVE in "${!ARCHIVE_DATES[@]}"; do
-    SKIP=0
-    for KEEP in "${KEEP_ARCHIVES[@]}"; do
-        if [[ "$ARCHIVE" == "$KEEP" ]]; then SKIP=1; break; fi
-    done
-    if [[ $SKIP -eq 0 ]]; then
-        DELETE_ARCHIVES+=("$ARCHIVE")
-    fi
-done
-
-# Delete old archives
-for ARCHIVE in "${DELETE_ARCHIVES[@]}"; do
-    echo "Deleting old archive: $ARCHIVE"
-    tarsnap --key-file "$TARSNAP_ROTATE_KEY" -d -f "$ARCHIVE"
-done
+echo "WordOps site backups

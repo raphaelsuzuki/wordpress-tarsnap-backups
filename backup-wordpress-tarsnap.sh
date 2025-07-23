@@ -1,9 +1,10 @@
 #!/bin/bash
 
-# WordOps Site Backup Script (Revised for Robustness)
-# This script automates the backup of WordOps sites using Tarsnap.
+# WordOps Site Backup Script
+# This script automates the backup of WordPress sites using Tarsnap.
 # It creates a backup of the site files and database, excluding cache and backup directories.
 # It is designed to be run as a cron job for daily backups.
+# Initially desiged for WordOps, it can be adapted for other environments with minor changes.
 #
 # --- Cron Job Setup Instructions ---
 #
@@ -18,11 +19,11 @@
 #    sudo crontab -e
 #
 # 2. Add the following line to the end of the file. This example runs the script daily at 3:00 AM.
-#    Replace "/path/to/your/backup_wo_sites.sh" with the actual path to this script file.
+#    Replace "/path/to/your/backup_wordpress_tarsnap.sh" with the actual path to this script file.
 #    The ">> /var/log/wo_backup.log 2>&1" part redirects all output (standard output and standard error)
 #    to a single log file, which is crucial for checking for success or errors.
 #
-#    0 3 * * * /bin/bash /path/to/your/backup_wo_sites.sh >> /var/log/wo_backup.log 2>&1
+#    0 3 * * * /bin/bash /path/to/your/backup_wordpress_tarsnap.sh >> /var/log/wo_backup.log 2>&1
 #
 #    Explanation of the cron time fields (0 3 * * *):
 #    - 0: Minute (00)
@@ -34,7 +35,7 @@
 # 3. Save and close the crontab file. Cron will automatically pick up the changes.
 #
 # 4. Ensure this script file has execute permissions:
-#    chmod +x /path/to/your/backup_wo_sites.sh
+#    chmod +x /path/to/your/backup_wordpress_tarsnap.sh
 #
 # 5. Ensure your Tarsnap key file has appropriate permissions (usually 600 for the root user):
 #    chmod 600 /path/to/tarsnap.key
@@ -74,10 +75,16 @@ TEMP_BACKUP_DIR="/tmp"                 # Temporary directory for database dumps
 TARSNAP_KEY_FILE="/path/to/tarsnap.key" # Path to your Tarsnap key file
 
 # Add site directory names here to exclude them from the backup process.
-# For example: EXCLUDE_SITES=("example.com.bak" "dev.example.com")
-EXCLUDE_SITES=()
-RETENTION_DAYS=14         # Number of days to keep backups
-MIN_BACKUPS_TO_KEEP=3     # Minimum number of backups to always keep per site
+# For example: EXCLUDED_SITES=("example.com.bak" "dev.example.com")
+EXCLUDED_SITES=(
+    "22222"
+    "html"
+    # "example.com"
+    # "staging.example.com"
+    # "testsite.com"
+)
+RETENTION_DAYS=31         # Number of days to keep backups
+MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site
 # --- End Configuration ---
 
 # Set strict mode for error handling
@@ -143,7 +150,7 @@ find "$SITES_ROOT" -mindepth 1 -maxdepth 1 -type d | while read -r SITE_PATH; do
 
     # Check if the site is in the exclusion list
     EXCLUDED=false
-    for EXCLUDED_SITE in "${EXCLUDE_SITES[@]}"; do
+    for EXCLUDED_SITE in "${EXCLUDED_SITES[@]}"; do
         if [[ "$SITE_DIRNAME" == "$EXCLUDED_SITE" ]]; then
             echo "Skipping excluded site: $SITE_DIRNAME"
             EXCLUDED=true

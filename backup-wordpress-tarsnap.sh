@@ -144,7 +144,8 @@ if [ ! -d "$TEMP_BACKUP_DIR" ]; then
 fi
 
 # Find all potential site directories (one level deep)
-find "$SITES_ROOT" -mindepth 1 -maxdepth 1 -type d | while read -r SITE_PATH; do
+for SITE_PATH in "$SITES_ROOT"/*/; do
+    [[ -d "$SITE_PATH" ]] || continue
     SITE_DIRNAME=$(basename "$SITE_PATH")
     WP_CONFIG_PATH="${SITE_PATH}/wp-config.php"
 

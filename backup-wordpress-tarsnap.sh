@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WordOps Site Backup Script
+# WordPress Tarsnap Backups
 # This script automates the backup of WordPress sites using Tarsnap.
 # It creates a backup of the site files and database, excluding cache and backup directories.
 # It is designed to be run as a cron job for daily backups.
@@ -66,7 +66,7 @@
 # Note: Always test the restoration process in a staging environment first.
 
 # --- Configuration ---
-SITES_ROOT="/var/www"                  # Root directory containing your WordOps sites
+SITES_ROOT="/var/www"                  # Root directory containing your WordPress sites, adjust accordingly
 
 # WARNING: /tmp can be a small RAM-based filesystem (tmpfs). If you have large
 # databases, consider changing this to a directory on a larger disk partition, like "/var/tmp".
@@ -83,22 +83,28 @@ EXCLUDED_SITES=(
     # "staging.example.com"
     # "testsite.com"
 )
-RETENTION_DAYS=31         # Number of days to keep backups
+RETENTION_DAYS=31          # Number of days to keep backups
 MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site
 # --- End Configuration ---
 
 # Set strict mode for error handling
 set -euo pipefail
 
-# Trap to clean up temporary files on exit or interruption.
-# Initialize with a default value to avoid unbound variable error if script exits early.
+# Trap to clean up temporary files on exit or interruption
 DB_DUMP_FILE=""
 MYSQL_CONN_OPTS=""
-trap 'rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"' EXIT
+TEMP_FILES=()
+cleanup() {
+    local file
+    for file in "${TEMP_FILES[@]}" "$DB_DUMP_FILE" "$MYSQL_CONN_OPTS"; do
+        [[ -n "$file" && -f "$file" ]] && rm -f "$file"
+    done
+}
+trap cleanup EXIT INT TERM
 
 # --- Pre-flight Checks ---
-# Check for required command-line tools before starting.
-REQUIRED_COMMANDS=("tarsnap" "mysqldump" "grep")
+# Check for required command-line tools before starting
+REQUIRED_COMMANDS=("tarsnap" "mysqldump" "grep" "sed" "tr" "mktemp" "date")
 for CMD in "${REQUIRED_COMMANDS[@]}"; do
     if ! command -v "$CMD" &> /dev/null; then
         echo "Error: Required command '$CMD' is not installed or not in your PATH."
@@ -106,26 +112,28 @@ for CMD in "${REQUIRED_COMMANDS[@]}"; do
     fi
 done
 
-# Check if grep supports Perl-compatible regular expressions (-P), which is needed for robust parsing.
-if ! grep -P "a" <<< "a" &> /dev/null; then
-    echo "Error: This script requires a version of grep that supports PCRE (-P option)."
-    exit 1
+# Check available disk space (require at least 1GB free)
+if ! df "$TEMP_BACKUP_DIR" | awk 'NR==2 {exit ($4 < 1048576)}'; then
+    echo "Warning: Less than 1GB free space in $TEMP_BACKUP_DIR"
 fi
 # --- End Pre-flight Checks ---
 
-# Function to robustly extract values from wp-config.php
-# Handles single quotes, double quotes, and escaped characters in values.
+# Function to safely extract values from wp-config.php
 # $1: Path to wp-config.php
 # $2: Define name (e.g., 'DB_NAME')
 get_wp_config_value() {
     local wp_config_file="$1"
     local define_name="$2"
-    # This powerful regex looks for the define name, then captures whatever is inside
-    # the next set of single or double quotes, correctly handling escaped quotes.
-    grep -P "define\(\s*['\"]${define_name}['\"]\s*,\s*['\"]\K[^'\"]*(?:\\.[^'\"]*)*" "$wp_config_file" | head -n 1
+    # Use safer regex without catastrophic backtracking
+    local value
+    value=$(grep -E "define\([[:space:]]*['\"]${define_name}['\"][[:space:]]*,[[:space:]]*['\"]" "$wp_config_file" | 
+           sed -n "s/.*define([[:space:]]*['\"]${define_name}['\"][[:space:]]*,[[:space:]]*['\"]\([^'\"]*\)['\"].*/\1/p" | 
+           head -n 1)
+    # Sanitize output - remove any shell metacharacters
+    printf '%s' "$value" | tr -d '`$(){}[]|&;<>'
 }
 
-echo "Starting WordOps site backups to Tarsnap..."
+echo "Starting WordPress site backups to Tarsnap..."
 echo "Timestamp: $(date)"
 echo "--------------------------------------------------"
 
@@ -170,50 +178,75 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
     echo "  Found wp-config.php. Extracting DB credentials..."
 
-    # Extract database credentials using the robust function
+    # Extract and validate database credentials
     DB_NAME=$(get_wp_config_value "$WP_CONFIG_PATH" 'DB_NAME')
     DB_USER=$(get_wp_config_value "$WP_CONFIG_PATH" 'DB_USER')
     DB_PASSWORD=$(get_wp_config_value "$WP_CONFIG_PATH" 'DB_PASSWORD')
     DB_HOST=$(get_wp_config_value "$WP_CONFIG_PATH" 'DB_HOST')
 
-    if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASSWORD" ]; then
+    # Validate extracted credentials
+    if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" ]]; then
         echo "  Error: Could not extract all required DB credentials for $SITE_DIRNAME."
         continue
     fi
-
-    DB_HOST=${DB_HOST:-localhost} # Default DB_HOST to "localhost" if it's empty or not found
-
-    echo "  Dumping database '$DB_NAME'..."
-
-    # Create temporary files for the DB dump and connection options
-    DATE=$(date +%Y-%m-%d-%H%M%S)
-    DB_DUMP_FILE="${TEMP_BACKUP_DIR}/${SITE_DIRNAME}_db_${DATE}_$$.sql"
-    MYSQL_CONN_OPTS=$(mktemp "${TEMP_BACKUP_DIR}/mysql_conn_opts_XXXXXX_$$")
-
-    # Securely write credentials to the temporary options file
-    {
-        echo "[client]"
-        echo "user=\"${DB_USER}\""
-        echo "password=\"${DB_PASSWORD}\""
-        echo "host=\"${DB_HOST}\""
-    } > "$MYSQL_CONN_OPTS"
-
-    # Perform database dump. Errors will now go to the main cron log.
-    if ! mysqldump --defaults-extra-file="$MYSQL_CONN_OPTS" "$DB_NAME" > "$DB_DUMP_FILE"; then
-        echo "  Error: mysqldump failed for database '$DB_NAME'. Check the log for the specific error from mysqldump."
-        rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE" # Clean up temp files
+    
+    # Validate credential format (basic sanity check)
+    if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_-]+$ ]] || [[ ! "$DB_USER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "  Error: Invalid database name or user format for $SITE_DIRNAME."
         continue
     fi
 
-    rm -f "$MYSQL_CONN_OPTS" # Clean up temporary credentials file immediately after use
-    MYSQL_CONN_OPTS="" # Clear variable
+    DB_HOST=${DB_HOST:-localhost}
+
+    echo "  Dumping database '$DB_NAME'..."
+
+    # Create secure temporary files
+    DATE=$(date +%Y-%m-%d-%H%M%S)
+    # Sanitize site dirname for filename
+    SAFE_SITE_NAME=$(printf '%s' "$SITE_DIRNAME" | tr -cd '[:alnum:]._-')
+    DB_DUMP_FILE=$(mktemp "${TEMP_BACKUP_DIR}/${SAFE_SITE_NAME}_db_${DATE}_XXXXXX.sql")
+    MYSQL_CONN_OPTS=$(mktemp "${TEMP_BACKUP_DIR}/mysql_conn_XXXXXX")
+    TEMP_FILES+=("$DB_DUMP_FILE" "$MYSQL_CONN_OPTS")
+    
+    # Set secure permissions on temp files
+    chmod 600 "$DB_DUMP_FILE" "$MYSQL_CONN_OPTS"
+
+    # Securely write credentials to the temporary options file
+    {
+        printf '[client]\n'
+        printf 'user=%s\n' "$DB_USER"
+        printf 'password=%s\n' "$DB_PASSWORD"
+        printf 'host=%s\n' "$DB_HOST"
+    } > "$MYSQL_CONN_OPTS"
+
+    # Perform database dump with timeout protection
+    if ! timeout 3600 mysqldump --defaults-extra-file="$MYSQL_CONN_OPTS" --single-transaction --routines --triggers "$DB_NAME" > "$DB_DUMP_FILE"; then
+        echo "  Error: mysqldump failed for database '$DB_NAME'. Check the log for details."
+        rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"
+        MYSQL_CONN_OPTS=""
+        DB_DUMP_FILE=""
+        continue
+    fi
+
+    # Verify dump file is not empty
+    if [[ ! -s "$DB_DUMP_FILE" ]]; then
+        echo "  Error: Database dump is empty for $DB_NAME"
+        rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"
+        MYSQL_CONN_OPTS=""
+        DB_DUMP_FILE=""
+        continue
+    fi
+
+    rm -f "$MYSQL_CONN_OPTS"
+    MYSQL_CONN_OPTS=""
 
     echo "  Database dump created: $DB_DUMP_FILE"
     echo "  Starting Tarsnap backup..."
     echo "  Excluding wp-content/cache/ and wp-content/updraft/ directories..."
 
-    TARSNAP_ARCHIVE_NAME="${SITE_DIRNAME}-${DATE}"
-    TARSNAP_EXCLUDES=("--exclude=wp-content/cache" "--exclude=wp-content/updraft")
+    # Create safe archive name
+    TARSNAP_ARCHIVE_NAME="${SAFE_SITE_NAME}-${DATE}"
+    TARSNAP_EXCLUDES=("--exclude=wp-content/cache" "--exclude=wp-content/updraft" "--exclude=wp-content/backup*")
     
     # Perform Tarsnap backup
     if tarsnap \
@@ -228,24 +261,29 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         echo "  Applying retention policy: keeping last $RETENTION_DAYS days and at least $MIN_BACKUPS_TO_KEEP backups..."
 
         # List all archives for this site, sorted newest first
-        mapfile -t all_archives < <(tarsnap --key-file "$TARSNAP_KEY_FILE" --list-archives | grep "^${SITE_DIRNAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
+        mapfile -t all_archives < <(tarsnap --key-file "$TARSNAP_KEY_FILE" --list-archives | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
 
         for i in "${!all_archives[@]}"; do
             archive="${all_archives[i]}"
             # Extract date part from archive name
-            if [[ "$archive" =~ ^${SITE_DIRNAME}-([0-9]{4})-([0-9]{2})-([0-9]{2})-([0-9]{6})$ ]]; then
+            if [[ "$archive" =~ ^${SAFE_SITE_NAME}-([0-9]{4})-([0-9]{2})-([0-9]{2})-([0-9]{6})$ ]]; then
                 archive_date="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
-                archive_epoch=$(date -d "$archive_date" +%s)
-                cutoff_epoch=$(date -d "-$RETENTION_DAYS days" +%s)
-                if (( archive_epoch < cutoff_epoch )); then
-                    if (( i >= MIN_BACKUPS_TO_KEEP )); then
-                        echo "    Deleting old archive: $archive"
-                        tarsnap --key-file "$TARSNAP_KEY_FILE" -d -f "$archive"
+                if archive_epoch=$(date -d "$archive_date" +%s 2>/dev/null) && 
+                   cutoff_epoch=$(date -d "-$RETENTION_DAYS days" +%s 2>/dev/null); then
+                    if (( archive_epoch < cutoff_epoch )); then
+                        if (( i >= MIN_BACKUPS_TO_KEEP )); then
+                            echo "    Deleting old archive: $archive"
+                            if ! tarsnap --key-file "$TARSNAP_KEY_FILE" -d -f "$archive"; then
+                                echo "    Warning: Failed to delete archive $archive"
+                            fi
+                        else
+                            echo "    Keeping (minimum required): $archive"
+                        fi
                     else
-                        echo "    Keeping (minimum required): $archive"
+                        echo "    Keeping (within retention): $archive"
                     fi
                 else
-                    echo "    Keeping (within retention): $archive"
+                    echo "    Skipping archive with invalid date: $archive"
                 fi
             else
                 echo "    Skipping unparseable archive: $archive"
@@ -266,4 +304,4 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 done
 
 echo "--------------------------------------------------"
-echo "WordOps site backups
+echo "WordPress sites backup completed at $(date)"

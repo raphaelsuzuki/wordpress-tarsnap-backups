@@ -5,65 +5,6 @@
 # It creates a backup of the site files and database, excluding cache and backup directories.
 # It is designed to be run as a cron job for daily backups.
 # Initially desiged for WordOps, it can be adapted for other environments with minor changes.
-#
-# --- Cron Job Setup Instructions ---
-#
-# To automate this script to run daily, add it to the root user's crontab.
-# This is recommended because the script needs permissions to:
-#
-# - Read /var/www directories and files
-# - Run mysqldump
-# - Access the Tarsnap key file (often owned by root)
-#
-# 1. Open the root user's crontab for editing:
-#    sudo crontab -e
-#
-# 2. Add the following line to the end of the file. This example runs the script daily at 3:00 AM.
-#    Replace "/path/to/your/backup_wordpress_tarsnap.sh" with the actual path to this script file.
-#    The ">> /var/log/wo_backup.log 2>&1" part redirects all output (standard output and standard error)
-#    to a single log file, which is crucial for checking for success or errors.
-#
-#    0 3 * * * /bin/bash /path/to/your/backup_wordpress_tarsnap.sh >> /var/log/wo_backup.log 2>&1
-#
-#    Explanation of the cron time fields (0 3 * * *):
-#    - 0: Minute (00)
-#    - 3: Hour (03:00 AM)
-#    - *: Day of the month (every day)
-#    - *: Month (every month)
-#    - *: Day of the week (every day of the week)
-#
-# 3. Save and close the crontab file. Cron will automatically pick up the changes.
-#
-# 4. Ensure this script file has execute permissions:
-#    chmod +x /path/to/your/backup_wordpress_tarsnap.sh
-#
-# 5. Ensure your Tarsnap key file has appropriate permissions (usually 600 for the root user):
-#    chmod 600 /path/to/tarsnap.key
-#
-# --- Restore Instructions ---
-#
-# To restore a backup created by this script using Tarsnap, follow these steps:
-#
-# 1. List all available Tarsnap archives to find the one you want to restore:
-#    tarsnap --key-file /path/to/tarsnap.key --list-archives
-#
-# 2. Restore the desired archive. This will restore site files and the temporary DB dump:
-#    tarsnap --key-file /path/to/tarsnap.key -x -f <archive-name> -C /
-#    (Replace <archive-name> with the name of the archive, e.g., site-2025-05-31-030000)
-#
-# 3. Locate the database dump file in the temporary directory specified in the configuration below.
-#
-# 4. Restore the database from the dump file:
-#    mysql -u <db_user> -p<db_password> <db_name> < /path/to/temp/dir/site-name_db_timestamp.sql
-#
-# 5. Verify the restoration by checking site files and database content.
-#    Then, fix file ownership and permissions:
-#    chown -R www-data:www-data /var/www/<site-name>
-#
-# 6. Restart WordOps services:
-#    wo stack restart
-#
-# Note: Always test the restoration process in a staging environment first.
 
 # --- Configuration ---
 SITES_ROOT="/var/www"                  # Root directory containing your WordPress sites, adjust accordingly

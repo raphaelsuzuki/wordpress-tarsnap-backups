@@ -8,12 +8,11 @@
 
 # --- Configuration ---
 SITES_ROOT="/var/www"                  # Root directory containing your WordPress sites, adjust accordingly
-
-# WARNING: /tmp can be a small RAM-based filesystem (tmpfs). If you have large
-# databases, consider changing this to a directory on a larger disk partition, like "/var/tmp".
-TEMP_BACKUP_DIR="/tmp"                 # Temporary directory for database dumps
-
+TEMP_BACKUP_DIR="/tmp"                 # Temporary directory for database dumps | WARNING: /tmp can be a small RAM-based filesystem (tmpfs). If you have large databases, consider changing this to a directory on a larger disk partition, like "/var/tmp".
 TARSNAP_KEY_FILE="/path/to/tarsnap.key" # Path to your Tarsnap key file
+LOG_DIR="/var/log/wordpress_tarsnap_backups"   # Directory for log files
+RETENTION_DAYS=31          # Number of days to keep backups
+MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site
 
 # Add site directory names here to exclude them from the backup process.
 # For example: EXCLUDED_SITES=("example.com.bak" "dev.example.com")
@@ -24,12 +23,32 @@ EXCLUDED_SITES=(
     # "staging.example.com"
     # "testsite.com"
 )
-RETENTION_DAYS=31          # Number of days to keep backups
-MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site
-# --- End Configuration ---
 
 # Set strict mode for error handling
 set -euo pipefail
+
+# --- Logging Setup ---
+# Create log directory if it doesn't exist
+mkdir -p "$LOG_DIR"
+MAIN_LOG="$LOG_DIR/backup.log"
+
+# Logging function
+log() {
+    local level="$1"
+    local site="${2:-MAIN}"
+    shift 2
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local msg="[$timestamp] $level: $*"
+    
+    # Write to main log and per-site log
+    echo "$msg" >> "$MAIN_LOG"
+    if [[ "$site" != "MAIN" ]]; then
+        echo "$msg" >> "$LOG_DIR/${site}.log"
+    fi
+    
+    # Also output to console for cron log
+    echo "$msg"
+}
 
 # Trap to clean up temporary files on exit or interruption
 DB_DUMP_FILE=""
@@ -48,14 +67,14 @@ trap cleanup EXIT INT TERM
 REQUIRED_COMMANDS=("tarsnap" "mysqldump" "grep" "sed" "tr" "mktemp" "date")
 for CMD in "${REQUIRED_COMMANDS[@]}"; do
     if ! command -v "$CMD" &> /dev/null; then
-        echo "Error: Required command '$CMD' is not installed or not in your PATH."
+        log "ERROR" "MAIN" "Required command '$CMD' is not installed or not in your PATH"
         exit 1
     fi
 done
 
 # Check available disk space (require at least 1GB free)
 if ! df "$TEMP_BACKUP_DIR" | awk 'NR==2 {exit ($4 < 1048576)}'; then
-    echo "Warning: Less than 1GB free space in $TEMP_BACKUP_DIR"
+    log "WARNING" "MAIN" "Less than 1GB free space in $TEMP_BACKUP_DIR"
 fi
 # --- End Pre-flight Checks ---
 
@@ -74,21 +93,20 @@ get_wp_config_value() {
     printf '%s' "$value" | tr -d '`$(){}[]|&;<>'
 }
 
-echo "Starting WordPress site backups to Tarsnap..."
-echo "Timestamp: $(date)"
-echo "--------------------------------------------------"
+log "INFO" "MAIN" "Starting WordPress site backups to Tarsnap"
+log "INFO" "MAIN" "Configuration: SITES_ROOT=$SITES_ROOT, RETENTION_DAYS=$RETENTION_DAYS"
 
 # Check if essential paths exist
 if [ ! -f "$TARSNAP_KEY_FILE" ]; then
-    echo "Error: Tarsnap key file not found at $TARSNAP_KEY_FILE."
+    log "ERROR" "MAIN" "Tarsnap key file not found at $TARSNAP_KEY_FILE"
     exit 1
 fi
 if [ ! -d "$SITES_ROOT" ]; then
-    echo "Error: Sites root directory not found at $SITES_ROOT."
+    log "ERROR" "MAIN" "Sites root directory not found at $SITES_ROOT"
     exit 1
 fi
 if [ ! -d "$TEMP_BACKUP_DIR" ]; then
-    echo "Error: Temporary backup directory not found at $TEMP_BACKUP_DIR."
+    log "ERROR" "MAIN" "Temporary backup directory not found at $TEMP_BACKUP_DIR"
     exit 1
 fi
 
@@ -102,22 +120,22 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     EXCLUDED=false
     for EXCLUDED_SITE in "${EXCLUDED_SITES[@]}"; do
         if [[ "$SITE_DIRNAME" == "$EXCLUDED_SITE" ]]; then
-            echo "Skipping excluded site: $SITE_DIRNAME"
+            log "INFO" "MAIN" "Skipping excluded site: $SITE_DIRNAME"
             EXCLUDED=true
             break
         fi
     done
     [[ "$EXCLUDED" == true ]] && continue
 
-    echo "Processing site: $SITE_DIRNAME"
+    log "INFO" "$SITE_DIRNAME" "Starting backup process"
 
     # Check if wp-config.php exists
     if [ ! -f "$WP_CONFIG_PATH" ]; then
-        echo "  Skipping: wp-config.php not found."
+        log "WARNING" "$SITE_DIRNAME" "wp-config.php not found, skipping site"
         continue
     fi
 
-    echo "  Found wp-config.php. Extracting DB credentials..."
+    log "INFO" "$SITE_DIRNAME" "Found wp-config.php, extracting database credentials"
 
     # Extract and validate database credentials
     DB_NAME=$(get_wp_config_value "$WP_CONFIG_PATH" 'DB_NAME')
@@ -127,19 +145,19 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
     # Validate extracted credentials
     if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" ]]; then
-        echo "  Error: Could not extract all required DB credentials for $SITE_DIRNAME."
+        log "ERROR" "$SITE_DIRNAME" "Could not extract all required database credentials"
         continue
     fi
     
     # Validate credential format (basic sanity check)
     if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_-]+$ ]] || [[ ! "$DB_USER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        echo "  Error: Invalid database name or user format for $SITE_DIRNAME."
+        log "ERROR" "$SITE_DIRNAME" "Invalid database name or user format"
         continue
     fi
 
     DB_HOST=${DB_HOST:-localhost}
 
-    echo "  Dumping database '$DB_NAME'..."
+    log "INFO" "$SITE_DIRNAME" "Starting database dump for '$DB_NAME'"
 
     # Create secure temporary files
     DATE=$(date +%Y-%m-%d-%H%M%S)
@@ -162,7 +180,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
     # Perform database dump with timeout protection
     if ! timeout 3600 mysqldump --defaults-extra-file="$MYSQL_CONN_OPTS" --single-transaction --routines --triggers "$DB_NAME" > "$DB_DUMP_FILE"; then
-        echo "  Error: mysqldump failed for database '$DB_NAME'. Check the log for details."
+        log "ERROR" "$SITE_DIRNAME" "mysqldump failed for database '$DB_NAME'"
         rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"
         MYSQL_CONN_OPTS=""
         DB_DUMP_FILE=""
@@ -171,7 +189,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
     # Verify dump file is not empty
     if [[ ! -s "$DB_DUMP_FILE" ]]; then
-        echo "  Error: Database dump is empty for $DB_NAME"
+        log "ERROR" "$SITE_DIRNAME" "Database dump is empty for $DB_NAME"
         rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"
         MYSQL_CONN_OPTS=""
         DB_DUMP_FILE=""
@@ -181,9 +199,8 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     rm -f "$MYSQL_CONN_OPTS"
     MYSQL_CONN_OPTS=""
 
-    echo "  Database dump created: $DB_DUMP_FILE"
-    echo "  Starting Tarsnap backup..."
-    echo "  Excluding wp-content/cache/ and wp-content/updraft/ directories..."
+    log "INFO" "$SITE_DIRNAME" "Database dump created: $(basename "$DB_DUMP_FILE")"
+    log "INFO" "$SITE_DIRNAME" "Starting Tarsnap backup (excluding cache/backup directories)"
 
     # Create safe archive name
     TARSNAP_ARCHIVE_NAME="${SAFE_SITE_NAME}-${DATE}"
@@ -196,10 +213,10 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         "${TARSNAP_EXCLUDES[@]}" \
         "$SITE_PATH" \
         "$DB_DUMP_FILE"; then
-        echo "  Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME"
+        log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME"
 
         # --- Retention Policy: Safe per-site deletion ---
-        echo "  Applying retention policy: keeping last $RETENTION_DAYS days and at least $MIN_BACKUPS_TO_KEEP backups..."
+        log "INFO" "$SITE_DIRNAME" "Applying retention policy (${RETENTION_DAYS}d, min ${MIN_BACKUPS_TO_KEEP} backups)"
 
         # List all archives for this site, sorted newest first
         mapfile -t all_archives < <(tarsnap --key-file "$TARSNAP_KEY_FILE" --list-archives | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
@@ -213,36 +230,33 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
                    cutoff_epoch=$(date -d "-$RETENTION_DAYS days" +%s 2>/dev/null); then
                     if (( archive_epoch < cutoff_epoch )); then
                         if (( i >= MIN_BACKUPS_TO_KEEP )); then
-                            echo "    Deleting old archive: $archive"
+                            log "INFO" "$SITE_DIRNAME" "Deleting old archive: $archive"
                             if ! tarsnap --key-file "$TARSNAP_KEY_FILE" -d -f "$archive"; then
-                                echo "    Warning: Failed to delete archive $archive"
+                                log "WARNING" "$SITE_DIRNAME" "Failed to delete archive $archive"
                             fi
                         else
-                            echo "    Keeping (minimum required): $archive"
+                            log "INFO" "$SITE_DIRNAME" "Keeping (minimum required): $archive"
                         fi
                     else
-                        echo "    Keeping (within retention): $archive"
+                        log "INFO" "$SITE_DIRNAME" "Keeping (within retention): $archive"
                     fi
                 else
-                    echo "    Skipping archive with invalid date: $archive"
+                    log "WARNING" "$SITE_DIRNAME" "Skipping archive with invalid date: $archive"
                 fi
             else
-                echo "    Skipping unparseable archive: $archive"
+                log "WARNING" "$SITE_DIRNAME" "Skipping unparseable archive: $archive"
             fi
         done
         # --- End Retention Policy ---
 
     else
-        echo "  Error: Tarsnap backup failed for site $SITE_DIRNAME. Check the log for details."
+        log "ERROR" "$SITE_DIRNAME" "Tarsnap backup failed"
     fi
 
-    echo "  Cleaning up temporary database dump file..."
+    log "INFO" "$SITE_DIRNAME" "Cleaning up temporary files"
     rm -f "$DB_DUMP_FILE"
-    DB_DUMP_FILE="" # Clear variable
-
-    echo "--------------------"
+    DB_DUMP_FILE=""
 
 done
 
-echo "--------------------------------------------------"
-echo "WordPress sites backup completed at $(date)"
+log "INFO" "MAIN" "WordPress backup process completed"

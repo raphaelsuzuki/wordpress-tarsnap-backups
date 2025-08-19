@@ -49,6 +49,7 @@ Edit the script variables as needed:
 - **Site root:** Change `SITES_ROOT` if your WordPress sites are not in `/var/www/`.
 - **Temp directory:** Set `TEMP_BACKUP_DIR` for database dumps. **Warning:** `/tmp` can be a small RAM-based filesystem (tmpfs). For large databases, consider `/var/tmp`.
 - **Tarsnap key:** Set `TARSNAP_KEY_FILE` path to your Tarsnap key file.
+- **Log directory:** Set `LOG_DIR` for log storage (default: `/var/log/wordpress_tarsnap_backups`).
 - **Excluded sites:** Add site directory names to `EXCLUDED_SITES` array (e.g., `"22222"`, `"html"`, `"staging.example.com"`).
 - **Retention policy:** Configure `RETENTION_DAYS` (days to keep backups) and `MIN_BACKUPS_TO_KEEP` (minimum backups to always retain per site).
 
@@ -77,6 +78,35 @@ To restore a backup created by this script:
    wo stack restart
    ```
 
+## Log Management
+
+The script uses a two-tiered logging approach:
+
+- **Main log**: `/var/log/wordpress_tarsnap_backups/backup.log` captures all backup operations
+- **Per-site logs**: `/var/log/wordpress_tarsnap_backups/site-name.log` contain detailed logs for each WordPress site
+- **Console output**: All logs also appear in the cron log for immediate monitoring
+
+Log entries include timestamps and severity levels (INFO, WARNING, ERROR).
+
+### Log Rotation
+
+Add the following to `/etc/logrotate.d/wordpress_tarsnap_backups` for automatic log rotation:
+
+```
+# Logrotate configuration for WordPress Tarsnap backups
+/var/log/wordpress_tarsnap_backups/*.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    create 640 root adm
+    postrotate
+        /bin/killall -HUP rsyslog 2>/dev/null || true
+    endscript
+}
+```
+
 ## Security Features
 
 - Secure temporary file creation with proper permissions
@@ -103,6 +133,8 @@ To restore a backup created by this script:
 - **Database connection fails:** Check MySQL credentials and connectivity
 - **Disk space issues:** Monitor temp directory space, especially for large databases
 - **Key file errors:** Verify Tarsnap key file path and permissions
+- **Log file not created:** Verify that `$LOG_DIR` exists and is writable by the script user
+- **Check per-site logs:** Review individual site logs in `/var/log/wordpress_tarsnap_backups/` for detailed error information
 
 ## Contributing
 

@@ -4,15 +4,16 @@
 # This script automates the backup of WordPress sites using Tarsnap.
 # It creates a backup of the site files and database, excluding cache and backup directories.
 # It is designed to be run as a cron job for daily backups.
-# Initially desiged for WordOps, it can be adapted for other environments with minor changes.
+# Initially designed for WordOps, it can be adapted for other environments with minor changes.
 
 # --- Configuration ---
 SITES_ROOT="/var/www"                  # Root directory containing your WordPress sites, adjust accordingly
 TEMP_BACKUP_DIR="/tmp"                 # Temporary directory for database dumps | WARNING: /tmp can be a small RAM-based filesystem (tmpfs). If you have large databases, consider changing this to a directory on a larger disk partition, like "/var/tmp".
-TARSNAP_KEY_FILE="/path/to/tarsnap.key" # Path to your Tarsnap key file
-LOG_DIR="/var/log/wordpress_tarsnap_backups"   # Directory for log files
-RETENTION_DAYS=31          # Number of days to keep backups
-MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site
+TARSNAP_KEY_FILE="/root/tarsnap.key"   # Path to your Tarsnap key file | This is the default path from the official documentation
+LOG_DIR="/var/log/wordpress-tarsnap-backups"   # Directory for log files
+RETENTION_DAYS=31          # Number of days to keep backups per site
+MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site |  Even if you stop using Tarsnap, this number of backups will be kept
+NOTIFY_EMAIL=""            # Email address for notifications (leave empty to disable)
 
 # Add site directory names here to exclude them from the backup process.
 # For example: EXCLUDED_SITES=("example.com.bak" "dev.example.com")
@@ -26,6 +27,13 @@ EXCLUDED_SITES=(
 
 # Set strict mode for error handling
 set -euo pipefail
+
+# Set Tarsnap key file environment variable
+export TARSNAP_KEYFILE="$TARSNAP_KEY_FILE"
+
+# Track errors for notification
+ERROR_COUNT=0
+ERROR_SITES=()
 
 # --- Logging Setup ---
 # Create log directory if it doesn't exist
@@ -146,12 +154,16 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     # Validate extracted credentials
     if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" ]]; then
         log "ERROR" "$SITE_DIRNAME" "Could not extract all required database credentials"
+        ((ERROR_COUNT++))
+        ERROR_SITES+=("$SITE_DIRNAME: DB credentials")
         continue
     fi
     
     # Validate credential format (basic sanity check)
     if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_-]+$ ]] || [[ ! "$DB_USER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
         log "ERROR" "$SITE_DIRNAME" "Invalid database name or user format"
+        ((ERROR_COUNT++))
+        ERROR_SITES+=("$SITE_DIRNAME: Invalid DB format")
         continue
     fi
 
@@ -181,6 +193,8 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     # Perform database dump with timeout protection
     if ! timeout 3600 mysqldump --defaults-extra-file="$MYSQL_CONN_OPTS" --single-transaction --routines --triggers "$DB_NAME" > "$DB_DUMP_FILE"; then
         log "ERROR" "$SITE_DIRNAME" "mysqldump failed for database '$DB_NAME'"
+        ((ERROR_COUNT++))
+        ERROR_SITES+=("$SITE_DIRNAME: mysqldump failed")
         rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"
         MYSQL_CONN_OPTS=""
         DB_DUMP_FILE=""
@@ -190,6 +204,8 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     # Verify dump file is not empty
     if [[ ! -s "$DB_DUMP_FILE" ]]; then
         log "ERROR" "$SITE_DIRNAME" "Database dump is empty for $DB_NAME"
+        ((ERROR_COUNT++))
+        ERROR_SITES+=("$SITE_DIRNAME: Empty DB dump")
         rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"
         MYSQL_CONN_OPTS=""
         DB_DUMP_FILE=""
@@ -204,11 +220,11 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
     # Create safe archive name
     TARSNAP_ARCHIVE_NAME="${SAFE_SITE_NAME}-${DATE}"
-    TARSNAP_EXCLUDES=("--exclude=wp-content/cache" "--exclude=wp-content/updraft" "--exclude=wp-content/backup*")
+    TARSNAP_EXCLUDES=("--exclude=*/wp-content/cache" "--exclude=*/wp-content/updraft" "--exclude=*/wp-content/backup*" "--exclude=*/wp-content/uploads/backup*")
     
     # Perform Tarsnap backup
     if tarsnap \
-        --key-file "$TARSNAP_KEY_FILE" \
+        --quiet \
         -c -f "$TARSNAP_ARCHIVE_NAME" \
         "${TARSNAP_EXCLUDES[@]}" \
         "$SITE_PATH" \
@@ -219,7 +235,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         log "INFO" "$SITE_DIRNAME" "Applying retention policy (${RETENTION_DAYS}d, min ${MIN_BACKUPS_TO_KEEP} backups)"
 
         # List all archives for this site, sorted newest first
-        mapfile -t all_archives < <(tarsnap --key-file "$TARSNAP_KEY_FILE" --list-archives | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
+        mapfile -t all_archives < <(tarsnap --list-archives | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
 
         for i in "${!all_archives[@]}"; do
             archive="${all_archives[i]}"
@@ -231,7 +247,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
                     if (( archive_epoch < cutoff_epoch )); then
                         if (( i >= MIN_BACKUPS_TO_KEEP )); then
                             log "INFO" "$SITE_DIRNAME" "Deleting old archive: $archive"
-                            if ! tarsnap --key-file "$TARSNAP_KEY_FILE" -d -f "$archive"; then
+                            if ! tarsnap --quiet -d -f "$archive"; then
                                 log "WARNING" "$SITE_DIRNAME" "Failed to delete archive $archive"
                             fi
                         else
@@ -251,6 +267,8 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
     else
         log "ERROR" "$SITE_DIRNAME" "Tarsnap backup failed"
+        ((ERROR_COUNT++))
+        ERROR_SITES+=("$SITE_DIRNAME: Tarsnap backup failed")
     fi
 
     log "INFO" "$SITE_DIRNAME" "Cleaning up temporary files"
@@ -260,3 +278,18 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 done
 
 log "INFO" "MAIN" "WordPress backup process completed"
+
+# Send email notification if configured
+if [[ -n "$NOTIFY_EMAIL" ]] && command -v mail &> /dev/null; then
+    HOSTNAME=$(hostname)
+    DATE=$(date '+%Y-%m-%d %H:%M:%S')
+    if (( ERROR_COUNT > 0 )); then
+        {
+            echo "WordPress Tarsnap backup completed on $HOSTNAME at $DATE with $ERROR_COUNT error(s):"
+            echo
+            printf '%s\n' "${ERROR_SITES[@]}"
+        } | mail -s "WordPress Backup ERRORS - $HOSTNAME" "$NOTIFY_EMAIL"
+    else
+        echo "WordPress Tarsnap backup process completed successfully on $HOSTNAME at $DATE" | mail -s "WordPress Backup Complete - $HOSTNAME" "$NOTIFY_EMAIL"
+    fi
+fi

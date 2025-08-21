@@ -26,10 +26,10 @@ Automated WordPress backup script using Tarsnap for multiple sites, designed for
    sudo chmod +x /usr/local/bin/backup-wordpress-tarsnap.sh
    sudo chown root:root /usr/local/bin/backup-wordpress-tarsnap.sh
    ```
-3. Configure your Tarsnap key file with secure permissions:
+3. Confirm that your Tarsnap key file has the following secure permissions:
    ```sh
-   sudo chmod 600 /path/to/tarsnap.key
-   sudo chown root:root /path/to/tarsnap.key
+   sudo chmod 600 /root/tarsnap.key
+   sudo chown root:root /root/tarsnap.key
    ```
 4. Set up a cron job as `root` user (required for permissions to read `/var/www/` directories, run `mysqldump`, and access the Tarsnap key file):
    ```sh
@@ -37,10 +37,10 @@ Automated WordPress backup script using Tarsnap for multiple sites, designed for
    ```
    Add sommething like the following line for daily backups at 3:00 AM:
    ```
-   0 3 * * * /usr/local/bin/backup-wordpress-tarsnap.sh >> /var/log/wo_backup.log 2>&1
+   0 3 * * * /usr/local/bin/backup-wordpress-tarsnap.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
    ```
   
-   The `>> /var/log/wo_backup.log 2>&1` redirects all output and errors to a log file for monitoring.
+   The `>> /var/log/wordpress-tarsnap-backups/cron.log 2>&1` redirects all output and errors to a log file for monitoring.
 
 ## Configuration
 
@@ -49,9 +49,10 @@ Edit the script variables as needed:
 - **Site root:** Change `SITES_ROOT` if your WordPress sites are not in `/var/www/`.
 - **Temp directory:** Set `TEMP_BACKUP_DIR` for database dumps. **Warning:** `/tmp` can be a small RAM-based filesystem (tmpfs). For large databases, consider `/var/tmp`.
 - **Tarsnap key:** Set `TARSNAP_KEY_FILE` path to your Tarsnap key file.
-- **Log directory:** Set `LOG_DIR` for log storage (default: `/var/log/wordpress_tarsnap_backups`).
+- **Log directory:** Set `LOG_DIR` for log storage (default: `/var/log/wordpress-tarsnap-backups`).
 - **Excluded sites:** Add site directory names to `EXCLUDED_SITES` array (e.g., `"22222"`, `"html"`, `"staging.example.com"`).
 - **Retention policy:** Configure `RETENTION_DAYS` (days to keep backups) and `MIN_BACKUPS_TO_KEEP` (minimum backups to always retain per site).
+- **Email notifications:** Set `NOTIFY_EMAIL` to receive completion notifications and error alerts.
 
 ## Restore Instructions
 
@@ -59,11 +60,11 @@ To restore a backup created by this script:
 
 1. List available archives:
    ```bash
-   tarsnap --key-file /path/to/tarsnap.key --list-archives
+   TARSNAP_KEYFILE=/root/tarsnap.key tarsnap --list-archives
    ```
 2. Restore the desired archive:
    ```bash
-   tarsnap --key-file /path/to/tarsnap.key -x -f <archive-name> -C /
+   TARSNAP_KEYFILE=/root/tarsnap.key tarsnap -x -f <archive-name> -C /
    ```
 3. Restore the database from the dump file:
    ```bash
@@ -82,19 +83,19 @@ To restore a backup created by this script:
 
 The script uses a two-tiered logging approach:
 
-- **Main log**: `/var/log/wordpress_tarsnap_backups/backup.log` captures all backup operations
-- **Per-site logs**: `/var/log/wordpress_tarsnap_backups/site-name.log` contain detailed logs for each WordPress site
-- **Console output**: All logs also appear in the cron log for immediate monitoring
+- **Main log**: `/var/log/wordpress-tarsnap-backups/backup.log` captures all backup operations
+- **Per-site logs**: `/var/log/wordpress-tarsnap-backups/site-name.log` contain detailed logs for each WordPress site
+- **Cron log**: `/var/log/wordpress-tarsnap-backups/cron.log` captures console output for monitoring
 
 Log entries include timestamps and severity levels (INFO, WARNING, ERROR).
 
 ### Log Rotation
 
-Add the following to `/etc/logrotate.d/wordpress_tarsnap_backups` for automatic log rotation:
+Add the following to `/etc/logrotate.d/wordpress-tarsnap-backups` for automatic log rotation:
 
 ```
 # Logrotate configuration for WordPress Tarsnap backups
-/var/log/wordpress_tarsnap_backups/*.log {
+/var/log/wordpress-tarsnap-backups/*.log {
     daily
     rotate 14
     compress
@@ -106,6 +107,19 @@ Add the following to `/etc/logrotate.d/wordpress_tarsnap_backups` for automatic 
     endscript
 }
 ```
+
+## Retention Policy
+
+The script uses a dual retention approach for maximum safety:
+
+- **Time-based**: Archives older than `RETENTION_DAYS` are eligible for deletion
+- **Count-based**: Always keeps at least `MIN_BACKUPS_TO_KEEP` newest backups per site
+
+An archive is only deleted if **both** conditions are met:
+1. The archive is older than the retention period
+2. There are enough newer backups to meet the minimum count requirement
+
+This prevents accidental deletion of all backups if the script hasn't run for an extended period while still maintaining the desired retention schedule during regular operations.
 
 ## Security Features
 
@@ -134,7 +148,7 @@ Add the following to `/etc/logrotate.d/wordpress_tarsnap_backups` for automatic 
 - **Disk space issues:** Monitor temp directory space, especially for large databases
 - **Key file errors:** Verify Tarsnap key file path and permissions
 - **Log file not created:** Verify that `$LOG_DIR` exists and is writable by the script user
-- **Check per-site logs:** Review individual site logs in `/var/log/wordpress_tarsnap_backups/` for detailed error information
+- **Check per-site logs:** Review individual site logs in `/var/log/wordpress-tarsnap-backups/` for detailed error information
 
 ## Contributing
 

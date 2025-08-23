@@ -12,11 +12,32 @@ Automated WordPress backup script using Tarsnap for multiple sites, designed for
 6. **Retention Management:** Automatically removes old backups based on configurable policies.
 7. **Error Handling:** Comprehensive error checking with secure cleanup of temporary files.
 8. **Logging:** Detailed logging of all backup operations and errors.
+9. **Email Notifications:** Sends completion and error notifications via email.
 
 ## Requirements
 
-- `tarsnap` (with account and key file)
+- `tarsnap`: Tarsnap account configured with key file
 - `mysqldump`
+- [Optional] Mail sending configured (for notifications).
+
+## Limitations
+
+- Requires root access for comprehensive site backup
+- Backups are stored with deduplication only
+- No builtin restore functionality: You need to use tarsnap commands to manually restore your sites
+ 
+## Retention Policy
+
+The script uses a dual retention approach for maximum safety:
+
+- **Time-based**: Archives older than `RETENTION_DAYS` are eligible for deletion
+- **Count-based**: Always keeps at least `MIN_BACKUPS_TO_KEEP` newest backups per site
+
+An archive is only deleted if **both** conditions are met:
+1. The archive is older than the retention period
+2. There are enough newer backups to meet the minimum count requirement
+
+This prevents accidental deletion of all backups if the script hasn't run for an extended period while still maintaining the desired retention schedule during regular operations.
 
 ## Usage
 
@@ -54,31 +75,6 @@ Edit the script variables as needed:
 - **Retention policy:** Configure `RETENTION_DAYS` (days to keep backups) and `MIN_BACKUPS_TO_KEEP` (minimum backups to always retain per site).
 - **Email notifications:** Set `NOTIFY_EMAIL` to receive completion notifications and error alerts.
 
-## Restore Instructions
-
-To restore a backup created by this script:
-
-1. List available archives:
-   ```bash
-   TARSNAP_KEYFILE=/root/tarsnap.key tarsnap --list-archives
-   ```
-2. Restore the desired archive:
-   ```bash
-   TARSNAP_KEYFILE=/root/tarsnap.key tarsnap -x -f <archive-name> -C /
-   ```
-3. Restore the database from the dump file:
-   ```bash
-   mysql -u <db_user> -p<db_password> <db_name> < /path/to/temp/dir/site-name_db_timestamp.sql
-   ```
-4. Fix file ownership and permissions:
-   ```bash
-   chown -R www-data:www-data /var/www/<site-name>
-   ```
-5. Restart services:
-   ```bash
-   wo stack restart
-   ```
-
 ## Log Management
 
 The script uses a two-tiered logging approach:
@@ -108,33 +104,30 @@ Add the following to `/etc/logrotate.d/wordpress-tarsnap-backups` for automatic 
 }
 ```
 
-## Retention Policy
+## Restore Instructions
 
-The script uses a dual retention approach for maximum safety:
+To restore a backup created by this script:
 
-- **Time-based**: Archives older than `RETENTION_DAYS` are eligible for deletion
-- **Count-based**: Always keeps at least `MIN_BACKUPS_TO_KEEP` newest backups per site
-
-An archive is only deleted if **both** conditions are met:
-1. The archive is older than the retention period
-2. There are enough newer backups to meet the minimum count requirement
-
-This prevents accidental deletion of all backups if the script hasn't run for an extended period while still maintaining the desired retention schedule during regular operations.
-
-## Security Features
-
-- Secure temporary file creation with proper permissions
-- Input validation and sanitization of database credentials
-- Protection against command injection and ReDoS attacks
-- Automatic cleanup of sensitive temporary files
-- Timeout protection for long-running operations
-
-## Limitations
-
-- Requires root access for comprehensive site backup
-- Database dumps stored temporarily in plaintext (secured with 600 permissions)
-- No incremental backup support (Tarsnap handles deduplication)
-- Limited to MySQL/MariaDB databases
+1. List available archives:
+   ```bash
+   TARSNAP_KEYFILE=/root/tarsnap.key tarsnap --list-archives
+   ```
+2. Restore the desired archive:
+   ```bash
+   TARSNAP_KEYFILE=/root/tarsnap.key tarsnap -x -f <archive-name> -C /
+   ```
+3. Restore the database from the dump file:
+   ```bash
+   mysql -u <db_user> -p<db_password> <db_name> < /path/to/temp/dir/site-name_db_timestamp.sql
+   ```
+4. Fix file ownership and permissions:
+   ```bash
+   chown -R www-data:www-data /var/www/<site-name>
+   ```
+5. Restart services:
+   ```bash
+   wo stack restart
+   ```
 
 ## Safety
 

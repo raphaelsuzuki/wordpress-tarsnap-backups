@@ -5,18 +5,18 @@ Automated WordPress backup script using Tarsnap for multiple sites, designed for
 ## Overview
 
 1. **Site Discovery:** Finds all WordPress installations in the configured root directory (typically `/var/www/`).
-2. **Database Extraction:** Securely extracts database credentials from `wp-config.php` files.
-3. **Database Backup:** Creates compressed SQL dumps with timeout protection.
+2. **Credentials Extraction:** Securely extracts database credentials from `wp-config.php` files of each installation.
+3. **Database Backup:** Creates SQL dumps with timeout protection.
 4. **File Backup:** Archives site files excluding cache and backup directories.
 5. **Secure Storage:** Uses Tarsnap for encrypted, deduplicated remote storage.
 6. **Retention Management:** Automatically removes old backups based on configurable policies.
 7. **Error Handling:** Comprehensive error checking with secure cleanup of temporary files.
 8. **Logging:** Detailed logging of all backup operations and errors.
-9. **Email Notifications:** Sends completion and error notifications via email.
+9. **Email Notifications:** Sends completion and error (if any) notifications via email.
 
 ## Requirements
 
-- `tarsnap`: Tarsnap account configured with key file
+- `tarsnap`: Tarsnap account configured with key file installed
 - `mysqldump`
 - [Optional] Mail sending configured (for notifications).
 
@@ -24,7 +24,7 @@ Automated WordPress backup script using Tarsnap for multiple sites, designed for
 
 - Requires root access for comprehensive site backup
 - Backups are stored with deduplication only
-- No builtin restore functionality: You need to use tarsnap commands to manually restore your sites
+- No builtin restoration functionality: You'll need to use tarsnap commands to manually restore your sites
  
 ## Retention Policy
 
@@ -41,11 +41,11 @@ This prevents accidental deletion of all backups if the script hasn't run for an
 
 ## Usage
 
-1. Place `backup-wordpress-tarsnap.sh` in a secure location (e.g., `/usr/local/bin/`).
+1. Place `wordpress-tarsnap-backups.sh` in a secure location (e.g., `/usr/local/bin/`).
 2. Make it executable and set appropriate ownership:
    ```sh
-   sudo chmod +x /usr/local/bin/backup-wordpress-tarsnap.sh
-   sudo chown root:root /usr/local/bin/backup-wordpress-tarsnap.sh
+   sudo chmod +x /usr/local/bin/wordpress-tarsnap-backups.sh
+   sudo chown root:root /usr/local/bin/wordpress-tarsnap-backups.sh
    ```
 3. Confirm that your Tarsnap key file has the following secure permissions:
    ```sh
@@ -58,7 +58,7 @@ This prevents accidental deletion of all backups if the script hasn't run for an
    ```
    Add sommething like the following line for daily backups at 3:00 AM:
    ```
-   0 3 * * * /usr/local/bin/backup-wordpress-tarsnap.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
+   0 3 * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
    ```
   
    The `>> /var/log/wordpress-tarsnap-backups/cron.log 2>&1` redirects all output and errors to a log file for monitoring.

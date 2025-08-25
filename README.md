@@ -28,8 +28,11 @@ Automated WordPress backup script using Tarsnap for multiple sites, designed for
  
 ## Retention Policy
 
-The script uses a dual retention approach for maximum safety:
+The script supports two retention schemes:
 
+### Simple Retention (default)
+
+A dual retention approach for maximum safety:
 - **Time-based**: Archives older than `RETENTION_DAYS` are eligible for deletion
 - **Count-based**: Always keeps at least `MIN_BACKUPS_TO_KEEP` newest backups per site
 
@@ -37,7 +40,16 @@ An archive is only deleted if **both** conditions are met:
 1. The archive is older than the retention period
 2. There are enough newer backups to meet the minimum count requirement
 
-This prevents accidental deletion of all backups if the script hasn't run for an extended period while still maintaining the desired retention schedule during regular operations.
+### GFS Retention (Grandfather-Father-Son)
+
+A hierarchical backup scheme that keeps:
+- **Hourly backups**: Recent backups for immediate recovery (default: 24 hours)
+- **Daily backups**: Recent backups for quick recovery (default: 7 days)
+- **Weekly backups**: Sunday backups for medium-term retention (default: 4 weeks)
+- **Monthly backups**: First-of-month backups for long-term retention (default: 12 months)
+- **Yearly backups**: First-of-year backups for archival purposes (default: 3 years)
+
+To enable GFS retention, set `RETENTION_SCHEME="gfs"` and configure the GFS_* variables.
 
 ## Usage
 
@@ -60,7 +72,12 @@ This prevents accidental deletion of all backups if the script hasn't run for an
    ```
    0 3 * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
    ```
-  
+
+   Or this one if you are using hourly GFS backups:
+   ```sh
+   0 * * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
+   ```
+
    The `>> /var/log/wordpress-tarsnap-backups/cron.log 2>&1` redirects all output and errors to a log file for monitoring.
 
 ## Configuration
@@ -72,7 +89,9 @@ Edit the script variables as needed:
 - **Tarsnap key:** Set `TARSNAP_KEY_FILE` path to your Tarsnap key file.
 - **Log directory:** Set `LOG_DIR` for log storage (default: `/var/log/wordpress-tarsnap-backups`).
 - **Excluded sites:** Add site directory names to `EXCLUDED_SITES` array (e.g., `"22222"`, `"html"`, `"staging.example.com"`).
-- **Retention policy:** Configure `RETENTION_DAYS` (days to keep backups) and `MIN_BACKUPS_TO_KEEP` (minimum backups to always retain per site).
+- **Retention policy:** Choose between `"simple"` or `"gfs"` (grandfather-father-son) retention schemes.
+  - Simple: Configure `RETENTION_DAYS` and `MIN_BACKUPS_TO_KEEP`
+  - GFS: Configure `GFS_HOURLY_KEEP`, `GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`, `GFS_MONTHLY_KEEP`, `GFS_YEARLY_KEEP`
 - **Email notifications:** Set `NOTIFY_EMAIL` to receive completion notifications and error alerts.
 
 ## Log Management

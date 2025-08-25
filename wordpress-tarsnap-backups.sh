@@ -11,8 +11,20 @@ SITES_ROOT="/var/www"                  # Root directory containing your WordPres
 TEMP_BACKUP_DIR="/tmp"                 # Temporary directory for database dumps | WARNING: /tmp can be a small RAM-based filesystem (tmpfs). If you have large databases, consider changing this to a directory on a larger disk partition, like "/var/tmp".
 TARSNAP_KEY_FILE="/root/tarsnap.key"   # Path to your Tarsnap key file | This is the default path from the official documentation
 LOG_DIR="/var/log/wordpress-tarsnap-backups"   # Directory for log files
+# Retention Policy Configuration
+RETENTION_SCHEME="simple"  # "simple" or "gfs" (grandfather-father-son)
+
+# Simple retention (used when RETENTION_SCHEME="simple")
 RETENTION_DAYS=31          # Number of days to keep backups per site
-MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site |  Even if you stop using Tarsnap, this number of backups will be kept
+MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site
+
+# GFS retention (used when RETENTION_SCHEME="gfs")
+GFS_HOURLY_KEEP=24         # Keep hourly backups for 24 hours
+GFS_DAILY_KEEP=7           # Keep daily backups for 7 days
+GFS_WEEKLY_KEEP=4          # Keep weekly backups for 4 weeks
+GFS_MONTHLY_KEEP=12        # Keep monthly backups for 12 months
+GFS_YEARLY_KEEP=3          # Keep yearly backups for 3 years
+
 NOTIFY_EMAIL=""            # Email address for notifications (leave empty to disable)
 
 # Add site directory names here to exclude them from the backup process.
@@ -101,8 +113,64 @@ get_wp_config_value() {
     printf '%s' "$value" | tr -d '`$(){}[]|&;<>'
 }
 
+# GFS Retention Function
+apply_gfs_retention() {
+    local site_name="$1"
+    local safe_site_name="$2"
+    
+    mapfile -t all_archives < <(tarsnap --list-archives | grep "^${safe_site_name}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
+    
+    local now_epoch=$(date +%s)
+    local hourly_cutoff=$((now_epoch - GFS_HOURLY_KEEP * 3600))
+    local daily_cutoff=$((now_epoch - GFS_DAILY_KEEP * 86400))
+    local weekly_cutoff=$((now_epoch - GFS_WEEKLY_KEEP * 7 * 86400))
+    local monthly_cutoff=$((now_epoch - GFS_MONTHLY_KEEP * 30 * 86400))
+    local yearly_cutoff=$((now_epoch - GFS_YEARLY_KEEP * 365 * 86400))
+    
+    declare -A keep_archives
+    
+    for archive in "${all_archives[@]}"; do
+        if [[ "$archive" =~ ^${safe_site_name}-([0-9]{4})-([0-9]{2})-([0-9]{2})-([0-9]{6})$ ]]; then
+            local archive_date="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+            local archive_epoch=$(date -d "$archive_date" +%s 2>/dev/null) || continue
+            local day_of_week=$(date -d "$archive_date" +%u)
+            local day_of_month=$(date -d "$archive_date" +%d)
+            local day_of_year=$(date -d "$archive_date" +%j)
+            
+            # Keep if within hourly retention
+            if (( archive_epoch >= hourly_cutoff )); then
+                keep_archives["$archive"]="hourly"
+            # Keep if within daily retention
+            elif (( archive_epoch >= daily_cutoff )); then
+                keep_archives["$archive"]="daily"
+            # Keep if weekly (Sunday) and within weekly retention
+            elif (( day_of_week == 7 && archive_epoch >= weekly_cutoff )); then
+                keep_archives["$archive"]="weekly"
+            # Keep if monthly (1st of month) and within monthly retention
+            elif (( day_of_month == 1 && archive_epoch >= monthly_cutoff )); then
+                keep_archives["$archive"]="monthly"
+            # Keep if yearly (1st of year) and within yearly retention
+            elif (( day_of_year == 1 && archive_epoch >= yearly_cutoff )); then
+                keep_archives["$archive"]="yearly"
+            fi
+        fi
+    done
+    
+    # Delete archives not in keep list
+    for archive in "${all_archives[@]}"; do
+        if [[ -z "${keep_archives[$archive]:-}" ]]; then
+            log "INFO" "$site_name" "Deleting archive (GFS): $archive"
+            if ! tarsnap --quiet -d -f "$archive"; then
+                log "WARNING" "$site_name" "Failed to delete archive $archive"
+            fi
+        else
+            log "INFO" "$site_name" "Keeping (${keep_archives[$archive]}): $archive"
+        fi
+    done
+}
+
 log "INFO" "MAIN" "Starting WordPress site backups to Tarsnap"
-log "INFO" "MAIN" "Configuration: SITES_ROOT=$SITES_ROOT, RETENTION_DAYS=$RETENTION_DAYS"
+log "INFO" "MAIN" "Configuration: SITES_ROOT=$SITES_ROOT, RETENTION_SCHEME=$RETENTION_SCHEME"
 
 # Check if essential paths exist
 if [ ! -f "$TARSNAP_KEY_FILE" ]; then
@@ -231,38 +299,40 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         "$DB_DUMP_FILE"; then
         log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME"
 
-        # --- Retention Policy: Safe per-site deletion ---
-        log "INFO" "$SITE_DIRNAME" "Applying retention policy (${RETENTION_DAYS}d, min ${MIN_BACKUPS_TO_KEEP} backups)"
-
-        # List all archives for this site, sorted newest first
-        mapfile -t all_archives < <(tarsnap --list-archives | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
-
-        for i in "${!all_archives[@]}"; do
-            archive="${all_archives[i]}"
-            # Extract date part from archive name
-            if [[ "$archive" =~ ^${SAFE_SITE_NAME}-([0-9]{4})-([0-9]{2})-([0-9]{2})-([0-9]{6})$ ]]; then
-                archive_date="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
-                if archive_epoch=$(date -d "$archive_date" +%s 2>/dev/null) && 
-                   cutoff_epoch=$(date -d "-$RETENTION_DAYS days" +%s 2>/dev/null); then
-                    if (( archive_epoch < cutoff_epoch )); then
-                        if (( i >= MIN_BACKUPS_TO_KEEP )); then
-                            log "INFO" "$SITE_DIRNAME" "Deleting old archive: $archive"
-                            if ! tarsnap --quiet -d -f "$archive"; then
-                                log "WARNING" "$SITE_DIRNAME" "Failed to delete archive $archive"
+        # --- Retention Policy ---
+        if [[ "$RETENTION_SCHEME" == "gfs" ]]; then
+            log "INFO" "$SITE_DIRNAME" "Applying GFS retention policy"
+            apply_gfs_retention "$SITE_DIRNAME" "$SAFE_SITE_NAME"
+        else
+            log "INFO" "$SITE_DIRNAME" "Applying simple retention policy (${RETENTION_DAYS}d, min ${MIN_BACKUPS_TO_KEEP} backups)"
+            mapfile -t all_archives < <(tarsnap --list-archives | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
+            
+            for i in "${!all_archives[@]}"; do
+                archive="${all_archives[i]}"
+                if [[ "$archive" =~ ^${SAFE_SITE_NAME}-([0-9]{4})-([0-9]{2})-([0-9]{2})-([0-9]{6})$ ]]; then
+                    archive_date="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+                    if archive_epoch=$(date -d "$archive_date" +%s 2>/dev/null) && 
+                       cutoff_epoch=$(date -d "-$RETENTION_DAYS days" +%s 2>/dev/null); then
+                        if (( archive_epoch < cutoff_epoch )); then
+                            if (( i >= MIN_BACKUPS_TO_KEEP )); then
+                                log "INFO" "$SITE_DIRNAME" "Deleting old archive: $archive"
+                                if ! tarsnap --quiet -d -f "$archive"; then
+                                    log "WARNING" "$SITE_DIRNAME" "Failed to delete archive $archive"
+                                fi
+                            else
+                                log "INFO" "$SITE_DIRNAME" "Keeping (minimum required): $archive"
                             fi
                         else
-                            log "INFO" "$SITE_DIRNAME" "Keeping (minimum required): $archive"
+                            log "INFO" "$SITE_DIRNAME" "Keeping (within retention): $archive"
                         fi
                     else
-                        log "INFO" "$SITE_DIRNAME" "Keeping (within retention): $archive"
+                        log "WARNING" "$SITE_DIRNAME" "Skipping archive with invalid date: $archive"
                     fi
                 else
-                    log "WARNING" "$SITE_DIRNAME" "Skipping archive with invalid date: $archive"
+                    log "WARNING" "$SITE_DIRNAME" "Skipping unparseable archive: $archive"
                 fi
-            else
-                log "WARNING" "$SITE_DIRNAME" "Skipping unparseable archive: $archive"
-            fi
-        done
+            done
+        fi
         # --- End Retention Policy ---
 
     else

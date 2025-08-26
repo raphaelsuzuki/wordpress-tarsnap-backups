@@ -1,15 +1,19 @@
 # WordPress Tarsnap Backups
 
-Automated WordPress backup script using Tarsnap for multiple sites, designed for WordOps environments.
+Automated backup solution for WordPress sites using Tarsnap
+
+Tarsnap is one of the most advanced backup systems ever created. This script utilizes the online service to create secure, deduplicated, and end-to-end encrypted backups of your WordPress sites. With all the important features at a fraction of the cost of other solutions, it offers the best combination of security, reliability and affordability.
+
+**Note**: This is an unofficial script and is not affiliated with or endorsed by Tarsnap Inc.
 
 ## Overview
 
 1. **Site Discovery:** Finds all WordPress installations in the configured root directory (typically `/var/www/`).
 2. **Credentials Extraction:** Securely extracts database credentials from `wp-config.php` files of each installation.
 3. **Database Backup:** Creates SQL dumps with timeout protection.
-4. **File Backup:** Archives site files excluding cache and backup directories.
-5. **Secure Storage:** Uses Tarsnap for encrypted, deduplicated remote storage.
-6. **Retention Management:** Automatically removes old backups based on configurable policies.
+4. **File Backup:** Archives site files excluding cache and backup directories. You can also exclude any unwanted site from your backups.
+5. **Secure Storage:** Tarsnap is end-to-end encrypted and has deduplication on remote storages by default.
+6. **Retention Management:** Automatically removes old backups based on many configurable policies.
 7. **Error Handling:** Comprehensive error checking with secure cleanup of temporary files.
 8. **Logging:** Detailed logging of all backup operations and errors.
 9. **Email Notifications:** Sends completion and error (if any) notifications via email.
@@ -22,27 +26,27 @@ Automated WordPress backup script using Tarsnap for multiple sites, designed for
 
 ## Limitations
 
-- Requires root access for comprehensive site backup
+- Requires root access for site backups
 - Backups are stored with deduplication only
-- No builtin restoration functionality: You'll need to use tarsnap commands to manually restore your sites
+- No builtin restoration functionality: You'll need to use the tarsnap command-line to manually restore your sites
  
 ## Retention Policy
 
-The script supports two retention schemes:
+The script supports multiple retention schemes:
 
 ### Simple Retention (default)
 
-A dual retention approach for maximum safety:
-- **Time-based**: Archives older than `RETENTION_DAYS` are eligible for deletion
-- **Count-based**: Always keeps at least `MIN_BACKUPS_TO_KEEP` newest backups per site
+A dual-criteria retention system commonly used by WordPress backup plugins that ensures backup safety:
+- **Age limit**: Archives older than `RETENTION_DAYS` become candidates for deletion
+- **Minimum count**: Always preserves at least `MIN_BACKUPS_TO_KEEP` most recent backups per site
 
-An archive is only deleted if **both** conditions are met:
-1. The archive is older than the retention period
-2. There are enough newer backups to meet the minimum count requirement
+Archives are deleted only when **both** conditions are satisfied:
+1. The archive exceeds the age limit
+2. Sufficient newer backups exist to maintain the minimum count
 
 ### GFS Retention (Grandfather-Father-Son)
 
-A hierarchical backup scheme that keeps:
+A hierarchical backup scheme that provides data protection through multiple retention periods. Popular among Tarsnap users and backup solutions like Apple's Time Machine. It consists of:
 - **Hourly backups**: Recent backups for immediate recovery (default: 24 hours)
 - **Daily backups**: Recent backups for quick recovery (default: 7 days)
 - **Weekly backups**: Sunday backups for medium-term retention (default: 4 weeks)
@@ -51,13 +55,31 @@ A hierarchical backup scheme that keeps:
 
 To enable GFS retention, set `RETENTION_SCHEME="gfs"` and configure the GFS_* variables.
 
+### Manual Retention
+
+No automatic cleanup is performed - you manage all backup deletion manually.
+
+To enable manual retention, set `RETENTION_SCHEME="manual"`.
+
+**Warning**: Manual retention can lead to:
+- **High storage costs** - Tarsnap charges for all stored data
+- **Performance issues** - Large numbers of archives slow operations
+- **Forgotten cleanup** - Archives accumulate indefinitely without manual intervention
+
+Use manual retention only when you have specific requirements and will actively manage archive cleanup.
+
 ## Usage
 
-1. Place `wordpress-tarsnap-backups.sh` in a secure location (e.g., `/usr/local/bin/`).
-2. Make it executable and set appropriate ownership:
+1. Place the script and configuration file in a secure location:
    ```sh
+   sudo cp wordpress-tarsnap-backups.sh /usr/local/bin/
+   sudo cp wordpress-tarsnap-backups.conf /etc/
    sudo chmod +x /usr/local/bin/wordpress-tarsnap-backups.sh
-   sudo chown root:root /usr/local/bin/wordpress-tarsnap-backups.sh
+   sudo chown root:root /usr/local/bin/wordpress-tarsnap-backups.sh /etc/wordpress-tarsnap-backups.conf
+   ```
+2. Edit the configuration file according to your environment:
+   ```sh
+   sudo nano /etc/wordpress-tarsnap-backups.conf
    ```
 3. Confirm that your Tarsnap key file has the following secure permissions:
    ```sh
@@ -68,9 +90,9 @@ To enable GFS retention, set `RETENTION_SCHEME="gfs"` and configure the GFS_* va
    ```sh
    sudo crontab -e
    ```
-   Add sommething like the following line for daily backups at 3:00 AM:
+   Add something like the following line for daily backups at 3:00 AM:
    ```
-   0 3 * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
+   0 3 * * * /usr/local/bin/wordpress-tarsnap-backups.sh /etc/wordpress-tarsnap-backups.conf >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
    ```
 
    Or this one if you are using hourly GFS backups:
@@ -82,17 +104,32 @@ To enable GFS retention, set `RETENTION_SCHEME="gfs"` and configure the GFS_* va
 
 ## Configuration
 
-Edit the script variables as needed:
+The script uses an external configuration file `wordpress-tarsnap-backups.conf`.
 
-- **Site root:** Change `SITES_ROOT` if your WordPress sites are not in `/var/www/`.
-- **Temp directory:** Set `TEMP_BACKUP_DIR` for database dumps. **Warning:** `/tmp` can be a small RAM-based filesystem (tmpfs). For large databases, consider `/var/tmp`.
-- **Tarsnap key:** Set `TARSNAP_KEY_FILE` path to your Tarsnap key file.
-- **Log directory:** Set `LOG_DIR` for log storage (default: `/var/log/wordpress-tarsnap-backups`).
-- **Excluded sites:** Add site directory names to `EXCLUDED_SITES` array (e.g., `"22222"`, `"html"`, `"staging.example.com"`).
-- **Retention policy:** Choose between `"simple"` or `"gfs"` (grandfather-father-son) retention schemes.
-  - Simple: Configure `RETENTION_DAYS` and `MIN_BACKUPS_TO_KEEP`
-  - GFS: Configure `GFS_HOURLY_KEEP`, `GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`, `GFS_MONTHLY_KEEP`, `GFS_YEARLY_KEEP`
-- **Email notifications:** Set `NOTIFY_EMAIL` to receive completion notifications and error alerts.
+### Configuration Options:
+
+- **Site root:** `SITES_ROOT` - Directory containing WordPress sites (default: `/var/www`)
+- **Temp directory:** `TEMP_BACKUP_DIR` - For database dumps (default: `/tmp`)
+- **Tarsnap key:** `TARSNAP_KEY_FILE` - Path to Tarsnap key file (default: `/root/tarsnap.key`)
+- **Log directory:** `LOG_DIR` - Log storage location (default: `/var/log/wordpress-tarsnap-backups`)
+- **Excluded sites:** `EXCLUDED_SITES` - Space-separated list of site directories to skip
+- **Retention policy:** `RETENTION_SCHEME` - Choose `"simple"`, `"gfs"`, or `"manual"`
+  - Simple: `RETENTION_DAYS` and `MIN_BACKUPS_TO_KEEP`
+  - GFS: `GFS_HOURLY_KEEP`, `GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`, `GFS_MONTHLY_KEEP`, `GFS_YEARLY_KEEP`
+- **Email notifications:** `NOTIFY_EMAIL` - Email address for notifications
+
+### Using Custom Configuration Examples:
+
+```bash
+# Use default config file (same directory as script)
+./wordpress-tarsnap-backups.sh
+
+# Use system config
+./wordpress-tarsnap-backups.sh /etc/wordpress-tarsnap-backups.conf
+
+# Use custom config file
+./wordpress-tarsnap-backups.sh /path/to/custom.conf
+```
 
 ## Log Management
 
@@ -143,10 +180,7 @@ To restore a backup created by this script:
    ```bash
    chown -R www-data:www-data /var/www/<site-name>
    ```
-5. Restart services:
-   ```bash
-   wo stack restart
-   ```
+5. Restart all required services.
 
 ## Safety
 

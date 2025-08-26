@@ -1,41 +1,53 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups
-# This script automates the backup of WordPress sites using Tarsnap.
-# It creates a backup of the site files and database, excluding cache and backup directories.
-# It is designed to be run as a cron job for daily backups.
-# Initially designed for WordOps, it can be adapted for other environments with minor changes.
+# WordPress Tarsnap Backups v1.0.0
+# Automated backup solution for WordPress sites using Tarsnap
+#
+# Features:
+# - Auto-discovery of WordPress installations
+# - Three retention schemes: Simple, GFS, and Manual
+# - External configuration file support
+# - Comprehensive error handling and email notifications
+#
+# Requirements: tarsnap, mysqldump, mail (optional)
+# License: MIT
 
-# --- Configuration ---
-SITES_ROOT="/var/www"                  # Root directory containing your WordPress sites, adjust accordingly
-TEMP_BACKUP_DIR="/tmp"                 # Temporary directory for database dumps | WARNING: /tmp can be a small RAM-based filesystem (tmpfs). If you have large databases, consider changing this to a directory on a larger disk partition, like "/var/tmp".
-TARSNAP_KEY_FILE="/root/tarsnap.key"   # Path to your Tarsnap key file | This is the default path from the official documentation
-LOG_DIR="/var/log/wordpress-tarsnap-backups"   # Directory for log files
-# Retention Policy Configuration
-RETENTION_SCHEME="simple"  # "simple" or "gfs" (grandfather-father-son)
+# --- Configuration Loading ---
+# Default configuration values | Check the explanation of each parameter on the config file
+SITES_ROOT="/var/www"
+TEMP_BACKUP_DIR="/tmp"
+TARSNAP_KEY_FILE="/root/tarsnap.key"
+LOG_DIR="/var/log/wordpress-tarsnap-backups"
+RETENTION_SCHEME="simple"
+RETENTION_DAYS=31
+MIN_BACKUPS_TO_KEEP=31
+GFS_HOURLY_KEEP=24
+GFS_DAILY_KEEP=7
+GFS_WEEKLY_KEEP=4
+GFS_MONTHLY_KEEP=12
+GFS_YEARLY_KEEP=3
+NOTIFY_EMAIL=""
+EXCLUDED_SITES="22222 html"
 
-# Simple retention (used when RETENTION_SCHEME="simple")
-RETENTION_DAYS=31          # Number of days to keep backups per site
-MIN_BACKUPS_TO_KEEP=31     # Minimum number of backups to always keep per site
+# Load configuration file
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${1:-$SCRIPT_DIR/wordpress-tarsnap-backups.conf}"
 
-# GFS retention (used when RETENTION_SCHEME="gfs")
-GFS_HOURLY_KEEP=24         # Keep hourly backups for 24 hours
-GFS_DAILY_KEEP=7           # Keep daily backups for 7 days
-GFS_WEEKLY_KEEP=4          # Keep weekly backups for 4 weeks
-GFS_MONTHLY_KEEP=12        # Keep monthly backups for 12 months
-GFS_YEARLY_KEEP=3          # Keep yearly backups for 3 years
+if [[ -f "$CONFIG_FILE" ]]; then
+    # Validate config file permissions for security
+    if [[ -r "$CONFIG_FILE" && ! -x "$CONFIG_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+    else
+        echo "Error: Configuration file '$CONFIG_FILE' has invalid permissions"
+        exit 1
+    fi
+else
+    echo "Warning: Configuration file '$CONFIG_FILE' not found, using defaults"
+fi
 
-NOTIFY_EMAIL=""            # Email address for notifications (leave empty to disable)
-
-# Add site directory names here to exclude them from the backup process.
-# For example: EXCLUDED_SITES=("example.com.bak" "dev.example.com")
-EXCLUDED_SITES=(
-    "22222"
-    "html"
-    # "example.com"
-    # "staging.example.com"
-    # "testsite.com"
-)
+# Convert space-separated EXCLUDED_SITES to array
+read -ra EXCLUDED_SITES_ARRAY <<< "$EXCLUDED_SITES"
 
 # Set strict mode for error handling
 set -euo pipefail
@@ -96,6 +108,31 @@ done
 if ! df "$TEMP_BACKUP_DIR" | awk 'NR==2 {exit ($4 < 1048576)}'; then
     log "WARNING" "MAIN" "Less than 1GB free space in $TEMP_BACKUP_DIR"
 fi
+
+# Validate retention configuration
+if [[ "$RETENTION_SCHEME" == "gfs" ]]; then
+    if (( GFS_HOURLY_KEEP < 1 || GFS_DAILY_KEEP < 1 || GFS_WEEKLY_KEEP < 1 || GFS_MONTHLY_KEEP < 1 || GFS_YEARLY_KEEP < 1 )); then
+        log "ERROR" "MAIN" "Invalid GFS retention configuration: all values must be >= 1"
+        exit 1
+    fi
+elif [[ "$RETENTION_SCHEME" == "simple" ]]; then
+    if (( RETENTION_DAYS < 1 || MIN_BACKUPS_TO_KEEP < 1 )); then
+        log "ERROR" "MAIN" "Invalid simple retention configuration: all values must be >= 1"
+        exit 1
+    fi
+elif [[ "$RETENTION_SCHEME" == "manual" ]]; then
+    log "WARNING" "MAIN" "Manual retention mode: No automatic cleanup will be performed"
+else
+    log "ERROR" "MAIN" "Invalid RETENTION_SCHEME: must be 'simple', 'gfs', or 'manual'"
+    exit 1
+fi
+
+# Test Tarsnap connectivity
+if ! tarsnap --list-archives &>/dev/null; then
+    log "ERROR" "MAIN" "Cannot connect to Tarsnap - check key file and network connectivity"
+    exit 1
+fi
+
 # --- End Pre-flight Checks ---
 
 # Function to safely extract values from wp-config.php
@@ -194,7 +231,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
     # Check if the site is in the exclusion list
     EXCLUDED=false
-    for EXCLUDED_SITE in "${EXCLUDED_SITES[@]}"; do
+    for EXCLUDED_SITE in "${EXCLUDED_SITES_ARRAY[@]}"; do
         if [[ "$SITE_DIRNAME" == "$EXCLUDED_SITE" ]]; then
             log "INFO" "MAIN" "Skipping excluded site: $SITE_DIRNAME"
             EXCLUDED=true
@@ -303,7 +340,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         if [[ "$RETENTION_SCHEME" == "gfs" ]]; then
             log "INFO" "$SITE_DIRNAME" "Applying GFS retention policy"
             apply_gfs_retention "$SITE_DIRNAME" "$SAFE_SITE_NAME"
-        else
+        elif [[ "$RETENTION_SCHEME" == "simple" ]]; then
             log "INFO" "$SITE_DIRNAME" "Applying simple retention policy (${RETENTION_DAYS}d, min ${MIN_BACKUPS_TO_KEEP} backups)"
             mapfile -t all_archives < <(tarsnap --list-archives | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
             
@@ -332,6 +369,8 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
                     log "WARNING" "$SITE_DIRNAME" "Skipping unparseable archive: $archive"
                 fi
             done
+        else
+            log "INFO" "$SITE_DIRNAME" "Manual retention mode: No automatic cleanup performed"
         fi
         # --- End Retention Policy ---
 

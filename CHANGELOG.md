@@ -1,0 +1,40 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.0] - 2025-08-26
+
+### Added
+- WordPress site auto-discovery and backup automation
+- Database credential extraction from wp-config.php files
+- Secure temporary file handling with proper cleanup
+- Comprehensive error handling and logging system
+- Email notifications for backup completion and errors
+- Three retention schemes: Simple, GFS (Grandfather-Father-Son), and Manual
+- GFS retention with hourly/daily/weekly/monthly/yearly tiers
+- Manual retention mode for full user control
+- External configuration file support (wordpress-tarsnap-backups.conf)
+- Flexible configuration loading with fallback defaults
+- Pre-flight checks for required commands and disk space
+- Input validation and sanitization for security
+- Configurable site exclusion list
+- Per-site and main logging with timestamps
+- Tarsnap compatibility improvements (TARSNAP_KEYFILE environment variable)
+- Production validation checks for retention configuration and connectivity
+
+### Security
+- Secure credential handling with temporary files (600 permissions)
+- Input sanitization to prevent command injection
+- ReDoS-safe regex patterns
+- Automatic cleanup of sensitive temporary files
+- Timeout protection for long-running operations
+
+### Documentation
+- Comprehensive README with installation and configuration instructions
+- Security documentation outlining protection measures
+- Retention policy explanations with examples
+- Troubleshooting guide
+- Restore instructions with examples

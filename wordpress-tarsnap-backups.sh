@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.2.0
+# WordPress Tarsnap Backups v1.3.0
 # Automated backup and restore solution for WordPress sites using Tarsnap
 #
 # Features:
@@ -79,6 +79,8 @@ export TARSNAP_KEYFILE="$TARSNAP_KEY_FILE"
 # Track errors for notification
 ERROR_COUNT=0
 ERROR_SITES=()
+ERROR_DETAILS=()
+BACKUP_STATS=()
 
 # --- Logging Setup ---
 # Create log directory if it doesn't exist
@@ -227,6 +229,9 @@ apply_gfs_retention() {
     done
 }
 
+# Start overall timing
+OVERALL_START=$(date +%s)
+
 log "INFO" "MAIN" "Starting WordPress site backups to Tarsnap"
 log "INFO" "MAIN" "Configuration: SITES_ROOT=$SITES_ROOT, RETENTION_SCHEME=$RETENTION_SCHEME"
 
@@ -261,6 +266,9 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     done
     [[ "$EXCLUDED" == true ]] && continue
 
+    # Start site backup timing
+    SITE_START=$(date +%s)
+    
     log "INFO" "$SITE_DIRNAME" "Starting backup process"
 
     # Check if wp-config.php exists
@@ -282,6 +290,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         log "ERROR" "$SITE_DIRNAME" "Could not extract all required database credentials"
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: DB credentials")
+        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Could not extract database credentials from wp-config.php")
         continue
     fi
     
@@ -290,6 +299,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         log "ERROR" "$SITE_DIRNAME" "Invalid database name or user format"
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: Invalid DB format")
+        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Invalid database credentials format (DB: $DB_NAME, User: $DB_USER)")
         continue
     fi
 
@@ -317,26 +327,34 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     } > "$MYSQL_CONN_OPTS"
 
     # Perform database dump with timeout protection
+    DB_START=$(date +%s)
     if ! timeout 3600 mysqldump --defaults-extra-file="$MYSQL_CONN_OPTS" --single-transaction --routines --triggers "$DB_NAME" > "$DB_DUMP_FILE"; then
         log "ERROR" "$SITE_DIRNAME" "mysqldump failed for database '$DB_NAME'"
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: mysqldump failed")
+        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: mysqldump failed for database '$DB_NAME' (timeout or connection error)")
         rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"
         MYSQL_CONN_OPTS=""
         DB_DUMP_FILE=""
         continue
     fi
+    DB_END=$(date +%s)
+    DB_DURATION=$((DB_END - DB_START))
 
     # Verify dump file is not empty
     if [[ ! -s "$DB_DUMP_FILE" ]]; then
         log "ERROR" "$SITE_DIRNAME" "Database dump is empty for $DB_NAME"
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: Empty DB dump")
+        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Database dump file is empty for '$DB_NAME' (possible permission or disk space issue)")
         rm -f "$MYSQL_CONN_OPTS" "$DB_DUMP_FILE"
         MYSQL_CONN_OPTS=""
         DB_DUMP_FILE=""
         continue
     fi
+    
+    DB_SIZE=$(stat -c%s "$DB_DUMP_FILE" 2>/dev/null || echo "0")
+    log "INFO" "$SITE_DIRNAME" "Database dump completed in ${DB_DURATION}s ($(numfmt --to=iec $DB_SIZE))"
 
     rm -f "$MYSQL_CONN_OPTS"
     MYSQL_CONN_OPTS=""
@@ -349,13 +367,30 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     TARSNAP_EXCLUDES=("--exclude=*/wp-content/cache" "--exclude=*/wp-content/updraft" "--exclude=*/wp-content/backup*" "--exclude=*/wp-content/uploads/backup*")
     
     # Perform Tarsnap backup
+    TARSNAP_START=$(date +%s)
     if tarsnap \
         --quiet \
         -c -f "$TARSNAP_ARCHIVE_NAME" \
         "${TARSNAP_EXCLUDES[@]}" \
         "$SITE_PATH" \
         "$DB_DUMP_FILE"; then
-        log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME"
+        TARSNAP_END=$(date +%s)
+        TARSNAP_DURATION=$((TARSNAP_END - TARSNAP_START))
+        
+        # Get archive size information
+        ARCHIVE_STATS=$(tarsnap --print-stats -f "$TARSNAP_ARCHIVE_NAME" 2>/dev/null || echo "")
+        if [[ -n "$ARCHIVE_STATS" ]]; then
+            TOTAL_SIZE=$(echo "$ARCHIVE_STATS" | grep "Total size" | awk '{print $3}' || echo "unknown")
+            COMPRESSED_SIZE=$(echo "$ARCHIVE_STATS" | grep "Compressed size" | awk '{print $3}' || echo "unknown")
+            log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s, $TOTAL_SIZE → $COMPRESSED_SIZE)"
+        else
+            log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s)"
+        fi
+        
+        # Calculate total site backup time
+        SITE_END=$(date +%s)
+        SITE_DURATION=$((SITE_END - SITE_START))
+        BACKUP_STATS+=("$SITE_DIRNAME: ${SITE_DURATION}s total (DB: ${DB_DURATION}s, Archive: ${TARSNAP_DURATION}s, Size: ${TOTAL_SIZE:-unknown})")
 
         # --- Retention Policy ---
         if [[ "$RETENTION_SCHEME" == "gfs" ]]; then
@@ -396,9 +431,12 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         # --- End Retention Policy ---
 
     else
-        log "ERROR" "$SITE_DIRNAME" "Tarsnap backup failed"
+        TARSNAP_END=$(date +%s)
+        TARSNAP_DURATION=$((TARSNAP_END - TARSNAP_START))
+        log "ERROR" "$SITE_DIRNAME" "Tarsnap backup failed after ${TARSNAP_DURATION}s"
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: Tarsnap backup failed")
+        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Tarsnap backup failed after ${TARSNAP_DURATION}s (check network, key file, or disk space)")
     fi
 
     log "INFO" "$SITE_DIRNAME" "Cleaning up temporary files"
@@ -407,7 +445,19 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
 done
 
-log "INFO" "MAIN" "WordPress backup process completed"
+# Calculate overall duration
+OVERALL_END=$(date +%s)
+OVERALL_DURATION=$((OVERALL_END - OVERALL_START))
+
+log "INFO" "MAIN" "WordPress backup process completed in ${OVERALL_DURATION}s"
+
+# Log backup statistics
+if [[ ${#BACKUP_STATS[@]} -gt 0 ]]; then
+    log "INFO" "MAIN" "Backup Statistics:"
+    for stat in "${BACKUP_STATS[@]}"; do
+        log "INFO" "MAIN" "  $stat"
+    done
+fi
 
 # --- Restore Functions ---
 restore_mode() {
@@ -780,10 +830,28 @@ if [[ -n "$NOTIFY_EMAIL" ]] && command -v mail &> /dev/null; then
     if (( ERROR_COUNT > 0 )); then
         {
             echo "WordPress Tarsnap backup completed on $HOSTNAME at $DATE with $ERROR_COUNT error(s):"
+            echo "Total duration: ${OVERALL_DURATION}s"
             echo
+            echo "Error Details:"
+            printf '%s\n' "${ERROR_DETAILS[@]}"
+            echo
+            echo "Summary:"
             printf '%s\n' "${ERROR_SITES[@]}"
+            if [[ ${#BACKUP_STATS[@]} -gt 0 ]]; then
+                echo
+                echo "Successful Backups:"
+                printf '%s\n' "${BACKUP_STATS[@]}"
+            fi
         } | mail -s "WordPress Backup ERRORS - $HOSTNAME" "$NOTIFY_EMAIL"
     else
-        echo "WordPress Tarsnap backup process completed successfully on $HOSTNAME at $DATE" | mail -s "WordPress Backup Complete - $HOSTNAME" "$NOTIFY_EMAIL"
+        {
+            echo "WordPress Tarsnap backup process completed successfully on $HOSTNAME at $DATE"
+            echo "Total duration: ${OVERALL_DURATION}s"
+            if [[ ${#BACKUP_STATS[@]} -gt 0 ]]; then
+                echo
+                echo "Backup Statistics:"
+                printf '%s\n' "${BACKUP_STATS[@]}"
+            fi
+        } | mail -s "WordPress Backup Complete - $HOSTNAME" "$NOTIFY_EMAIL"
     fi
 fi

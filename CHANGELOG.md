@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-01-27
+
+### Improved
+- Enhanced configuration file loading with intelligent priority system
+- Automatic config discovery: `/etc/` first, then script directory, then defaults
+- Simplified usage - no config path required for standard installations
+- Updated documentation to reflect new configuration loading behavior
+
 ## [1.0.0] - 2025-08-26
 
 ### Added

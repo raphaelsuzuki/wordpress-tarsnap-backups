@@ -106,6 +106,23 @@ Use manual retention only when you have specific requirements and will actively 
 
 The script uses an external configuration file `wordpress-tarsnap-backups.conf`.
 
+### Configuration File Loading Priority:
+
+When run **without arguments**, the script searches for configuration files in this order:
+1. `/etc/wordpress-tarsnap-backups.conf` (system-wide config)
+2. `wordpress-tarsnap-backups.conf` (same directory as script)
+3. Built-in defaults (if no config file found)
+
+### Configuration File Examples:
+
+```bash
+# Use automatic config discovery (recommended)
+./wordpress-tarsnap-backups.sh
+
+# Use specific config file
+./wordpress-tarsnap-backups.sh /path/to/custom.conf
+```
+
 ### Configuration Options:
 
 - **Site root:** `SITES_ROOT` - Directory containing WordPress sites (default: `/var/www`)
@@ -117,19 +134,6 @@ The script uses an external configuration file `wordpress-tarsnap-backups.conf`.
   - Simple: `RETENTION_DAYS` and `MIN_BACKUPS_TO_KEEP`
   - GFS: `GFS_HOURLY_KEEP`, `GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`, `GFS_MONTHLY_KEEP`, `GFS_YEARLY_KEEP`
 - **Email notifications:** `NOTIFY_EMAIL` - Email address for notifications
-
-### Using Custom Configuration Examples:
-
-```bash
-# Use default config file (same directory as script)
-./wordpress-tarsnap-backups.sh
-
-# Use system config
-./wordpress-tarsnap-backups.sh /etc/wordpress-tarsnap-backups.conf
-
-# Use custom config file
-./wordpress-tarsnap-backups.sh /path/to/custom.conf
-```
 
 ## Log Management
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.0.0
+# WordPress Tarsnap Backups v1.1.0
 # Automated backup solution for WordPress sites using Tarsnap
 #
 # Features:
@@ -12,7 +12,7 @@
 # Requirements: tarsnap, mysqldump, mail (optional)
 # License: MIT
 
-# --- Configuration Loading ---
+# --- Configuration ---
 # Default configuration values | Check the explanation of each parameter on the config file
 SITES_ROOT="/var/www"
 TEMP_BACKUP_DIR="/tmp"
@@ -31,9 +31,22 @@ EXCLUDED_SITES="22222 html"
 
 # Load configuration file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${1:-$SCRIPT_DIR/wordpress-tarsnap-backups.conf}"
 
-if [[ -f "$CONFIG_FILE" ]]; then
+if [[ $# -eq 0 ]]; then
+    # No arguments: try /etc/ first, then same directory
+    if [[ -f "/etc/wordpress-tarsnap-backups.conf" ]]; then
+        CONFIG_FILE="/etc/wordpress-tarsnap-backups.conf"
+    elif [[ -f "$SCRIPT_DIR/wordpress-tarsnap-backups.conf" ]]; then
+        CONFIG_FILE="$SCRIPT_DIR/wordpress-tarsnap-backups.conf"
+    else
+        CONFIG_FILE=""
+    fi
+else
+    # Argument provided: use it
+    CONFIG_FILE="$1"
+fi
+
+if [[ -n "$CONFIG_FILE" && -f "$CONFIG_FILE" ]]; then
     # Validate config file permissions for security
     if [[ -r "$CONFIG_FILE" && ! -x "$CONFIG_FILE" ]]; then
         # shellcheck source=/dev/null
@@ -43,7 +56,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
         exit 1
     fi
 else
-    echo "Warning: Configuration file '$CONFIG_FILE' not found, using defaults"
+    echo "Warning: No configuration file found, using defaults"
 fi
 
 # Convert space-separated EXCLUDED_SITES to array

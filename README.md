@@ -94,14 +94,14 @@ Use manual retention only when you have specific requirements and will actively 
    ```sh
    sudo crontab -e
    ```
-   If you are using Simple Retention, add the following line for daily backups at 2:00 AM:
+   If you are using Simple Retention, add the following line for daily backups at 2:30 AM:
    ```sh
-   0 2 * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
+   30 2 * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
    ```
 
    Or this one if you are using hourly GFS backups:
    ```sh
-   0 * * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
+   30 * * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
    ```
 
 ### Restore Operations

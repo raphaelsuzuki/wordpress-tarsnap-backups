@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.4.0
+# WordPress Tarsnap Backups v1.4.1
 # Automated backup and restore solution for WordPress sites using Tarsnap
 #
 # Features:
@@ -342,14 +342,14 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         while kill -0 $$ 2>/dev/null; do
             sleep 30
             if [[ -f "$DB_DUMP_FILE" ]]; then
-                local size=$(stat -c%s "$DB_DUMP_FILE" 2>/dev/null || echo "0")
+                size=$(stat -c%s "$DB_DUMP_FILE" 2>/dev/null || echo "0")
                 if (( size > 0 )); then
                     log "INFO" "$SITE_DIRNAME" "Database dump progress: $(numfmt --to=iec $size) written..."
                 fi
             fi
         done
     } &
-    local db_progress_pid=$!
+    db_progress_pid=$!
     
     if ! timeout 3600 mysqldump --defaults-extra-file="$MYSQL_CONN_OPTS" --single-transaction --routines --triggers "$DB_NAME" > "$DB_DUMP_FILE"; then
         kill $db_progress_pid 2>/dev/null || true
@@ -397,11 +397,11 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     {
         while kill -0 $$ 2>/dev/null; do
             sleep 60
-            local elapsed=$(( $(date +%s) - TARSNAP_START ))
+            elapsed=$(( $(date +%s) - TARSNAP_START ))
             log "INFO" "$SITE_DIRNAME" "Tarsnap backup running... (${elapsed}s elapsed)"
         done
     } &
-    local tarsnap_progress_pid=$!
+    tarsnap_progress_pid=$!
     
     # Perform Tarsnap backup
     if tarsnap \

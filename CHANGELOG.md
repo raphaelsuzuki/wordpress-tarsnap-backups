@@ -5,22 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.0] - 2025-01-27
+## [1.4.1] - 2025-01-27
 
-### Added
-- Backup size reporting with Tarsnap archive statistics
-- Duration tracking for database dumps, Tarsnap uploads, and total backup time
-- Enhanced error details with timestamps and specific failure context
-- Performance metrics in backup completion logs
-- Compression ratio reporting (original → compressed size)
-- Human-readable file size formatting
-- Comprehensive backup statistics in email notifications
-
-### Improved
-- Email notifications now include timing and size statistics
-- Error notifications provide detailed timestamps and failure reasons
-- Better monitoring and troubleshooting capabilities
-- Enhanced logging with performance insights
+### Fixed
+- Fixed "local: can only be used in a function" error in progress indicator background processes
+- Removed incorrect local variable declarations from background loops
+- Improved script reliability and compatibility across different bash environments
 
 ## [1.4.0] - 2025-01-27
 
@@ -37,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced logging with operation timing and performance metrics
 - More informative email notifications with backup statistics
 - Minimal performance overhead from background progress monitoring
+
+## [1.3.0] - 2025-01-27
+
+### Added
+- Backup size reporting with Tarsnap archive statistics
+- Duration tracking for database dumps, Tarsnap uploads, and total backup time
+- Enhanced error details with timestamps and specific failure context
+- Performance metrics in backup completion logs
+- Compression ratio reporting (original → compressed size)
+- Human-readable file size formatting
+- Comprehensive backup statistics in email notifications
+
+### Improved
+- Email notifications now include timing and size statistics
+- Error notifications provide detailed timestamps and failure reasons
+- Better monitoring and troubleshooting capabilities
+- Enhanced logging with performance insights
 
 ## [1.2.0] - 2025-01-27
 

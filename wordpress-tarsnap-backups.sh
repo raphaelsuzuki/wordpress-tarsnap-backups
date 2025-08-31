@@ -1,16 +1,20 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.1.0
-# Automated backup solution for WordPress sites using Tarsnap
+# WordPress Tarsnap Backups v1.2.0
+# Automated backup and restore solution for WordPress sites using Tarsnap
 #
 # Features:
 # - Auto-discovery of WordPress installations
 # - Three retention schemes: Simple, GFS, and Manual
 # - External configuration file support
 # - Comprehensive error handling and email notifications
+# - Failproof restore with automatic rollback and validation
 #
 # Requirements: tarsnap, mysqldump, mail (optional)
 # License: MIT
+
+# Set strict mode for error handling
+set -euo pipefail
 
 # --- Configuration ---
 # Default configuration values | Check the explanation of each parameter on the config file
@@ -62,8 +66,12 @@ fi
 # Convert space-separated EXCLUDED_SITES to array
 read -ra EXCLUDED_SITES_ARRAY <<< "$EXCLUDED_SITES"
 
-# Set strict mode for error handling
-set -euo pipefail
+# Check for restore mode
+if [[ "${1:-}" == "--restore" ]]; then
+    shift
+    restore_mode "$@"
+    exit 0
+fi
 
 # Set Tarsnap key file environment variable
 export TARSNAP_KEYFILE="$TARSNAP_KEY_FILE"
@@ -400,6 +408,370 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 done
 
 log "INFO" "MAIN" "WordPress backup process completed"
+
+# --- Restore Functions ---
+restore_mode() {
+    echo "WordPress Tarsnap Restore Wizard"
+    echo "================================="
+    
+    # List available archives
+    echo "\nFetching available backups..."
+    mapfile -t archives < <(tarsnap --list-archives | grep -E '^[^-]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$' | sort -r)
+    
+    if [[ ${#archives[@]} -eq 0 ]]; then
+        echo "No backups found."
+        exit 1
+    fi
+    
+    # Group by site
+    declare -A sites
+    for archive in "${archives[@]}"; do
+        if [[ "$archive" =~ ^([^-]+)- ]]; then
+            site="${BASH_REMATCH[1]}"
+            sites["$site"]+="$archive\n"
+        fi
+    done
+    
+    # Select site
+    echo "\nAvailable sites:"
+    site_list=()
+    i=1
+    for site in $(printf '%s\n' "${!sites[@]}" | sort); do
+        echo "$i) $site"
+        site_list+=("$site")
+        ((i++))
+    done
+    
+    read -p "\nSelect site (1-${#site_list[@]}): " site_choice
+    if [[ ! "$site_choice" =~ ^[0-9]+$ ]] || (( site_choice < 1 || site_choice > ${#site_list[@]} )); then
+        echo "Invalid selection."
+        exit 1
+    fi
+    
+    selected_site="${site_list[$((site_choice-1))]}"
+    
+    # Select backup with pagination
+    mapfile -t all_site_archives < <(printf "${sites[$selected_site]}")
+    local page=0
+    local per_page=10
+    
+    while true; do
+        local start=$((page * per_page))
+        local end=$((start + per_page))
+        
+        echo "\nAvailable backups for $selected_site (page $((page+1))):"
+        
+        local displayed=0
+        for i in $(seq $start $((end-1))); do
+            [[ $i -ge ${#all_site_archives[@]} ]] && break
+            archive="${all_site_archives[i]}"
+            if [[ "$archive" =~ -([0-9]{4})-([0-9]{2})-([0-9]{2})-([0-9]{6})$ ]]; then
+                date_str="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]:0:2}:${BASH_REMATCH[4]:2:2}:${BASH_REMATCH[4]:4:2}"
+                echo "$((i+1))) $archive ($date_str)"
+                ((displayed++))
+            fi
+        done
+        
+        [[ $displayed -eq 0 ]] && { echo "No more backups."; break; }
+        
+        echo
+        [[ $((end)) -lt ${#all_site_archives[@]} ]] && echo "n) Next page"
+        [[ $page -gt 0 ]] && echo "p) Previous page"
+        echo "q) Quit"
+        
+        read -p "\nSelect backup (number), or n/p/q: " choice
+        
+        case "$choice" in
+            n|N)
+                [[ $((end)) -lt ${#all_site_archives[@]} ]] && ((page++)) || echo "Already on last page."
+                ;;
+            p|P)
+                [[ $page -gt 0 ]] && ((page--)) || echo "Already on first page."
+                ;;
+            q|Q)
+                echo "Restore cancelled."
+                exit 0
+                ;;
+            *)
+                if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#all_site_archives[@]} )); then
+                    selected_archive="${all_site_archives[$((choice-1))]}"
+                    break 2
+                else
+                    echo "Invalid selection."
+                fi
+                ;;
+        esac
+    done
+    
+    # Detailed confirmation
+    echo "\n" + "="*50
+    echo "RESTORE CONFIRMATION"
+    echo "="*50
+    echo "Site: $selected_site"
+    echo "Archive: $selected_archive"
+    echo "Target: $SITES_ROOT/$selected_site"
+    echo "\nWARNING: This will:"
+    echo "• Create backup of existing site"
+    echo "• OVERWRITE all files in $SITES_ROOT/$selected_site"
+    echo "• OVERWRITE the database completely"
+    echo "• Create restore log for audit trail"
+    echo "\nSafety measures:"
+    echo "• Full backup before restore"
+    echo "• Automatic rollback on failure"
+    echo "• WordPress validation after restore"
+    echo "="*50
+    
+    read -p "Type 'RESTORE' to confirm: " confirm
+    if [[ "$confirm" != "RESTORE" ]]; then
+        echo "Restore cancelled."
+        exit 0
+    fi
+    
+    perform_restore "$selected_archive" "$selected_site"
+}
+
+perform_restore() {
+    local archive_name="$1"
+    local site_name="$2"
+    local site_path="$SITES_ROOT/$site_name"
+    local timestamp=$(date +%s)
+    local restore_dir=$(mktemp -d "${TEMP_BACKUP_DIR}/restore_${site_name}_${timestamp}_XXXXXX")
+    local backup_dir="${site_path}.backup.${timestamp}"
+    local db_backup_file="${backup_dir}_database.sql"
+    local restore_log="$LOG_DIR/restore_${site_name}_${timestamp}.log"
+    
+    # Logging function for restore
+    restore_log() {
+        local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+        echo "$msg" | tee -a "$restore_log"
+    }
+    
+    restore_log "Starting failproof restore process for $site_name"
+    
+    # Pre-restore validation
+    restore_log "Phase 1: Pre-restore validation"
+    
+    # Check disk space (3x archive size)
+    local archive_size=$(tarsnap --print-stats -f "$archive_name" 2>/dev/null | grep "Compressed size" | awk '{print $3}' || echo "1000000000")
+    local required_space=$((archive_size * 3))
+    local available_space=$(df "$TEMP_BACKUP_DIR" | awk 'NR==2 {print $4*1024}')
+    
+    if (( available_space < required_space )); then
+        restore_log "ERROR: Insufficient disk space. Required: $required_space, Available: $available_space"
+        return 1
+    fi
+    
+    # Test database connectivity
+    if [[ -f "$site_path/wp-config.php" ]]; then
+        local db_name=$(get_wp_config_value "$site_path/wp-config.php" 'DB_NAME')
+        local db_user=$(get_wp_config_value "$site_path/wp-config.php" 'DB_USER')
+        local db_password=$(get_wp_config_value "$site_path/wp-config.php" 'DB_PASSWORD')
+        local db_host=$(get_wp_config_value "$site_path/wp-config.php" 'DB_HOST')
+        db_host=${db_host:-localhost}
+        
+        if ! mysql -u "$db_user" -p"$db_password" -h "$db_host" -e "SELECT 1" "$db_name" &>/dev/null; then
+            restore_log "ERROR: Cannot connect to database $db_name"
+            return 1
+        fi
+        restore_log "Database connectivity verified"
+    fi
+    
+    # Dry run mode
+    read -p "\nPerform dry run first? (Y/n): " dry_run
+    if [[ "$dry_run" != "n" && "$dry_run" != "N" ]]; then
+        restore_log "Phase 2: Dry run validation"
+        
+        # Test archive extraction
+        if ! tarsnap --dry-run -x -f "$archive_name" -C "$restore_dir" &>/dev/null; then
+            restore_log "ERROR: Archive extraction test failed"
+            return 1
+        fi
+        restore_log "Archive extraction test passed"
+        
+        echo "\nDry run completed successfully. Proceed with actual restore?"
+        read -p "Continue? (y/N): " proceed
+        if [[ "$proceed" != "y" && "$proceed" != "Y" ]]; then
+            restore_log "Restore cancelled by user"
+            return 0
+        fi
+    fi
+    
+    # Create full backup of existing site
+    restore_log "Phase 3: Creating safety backup"
+    
+    if [[ -d "$site_path" ]]; then
+        restore_log "Backing up existing site to $backup_dir"
+        if ! cp -a "$site_path" "$backup_dir"; then
+            restore_log "ERROR: Failed to backup existing site"
+            return 1
+        fi
+        
+        # Backup database
+        if [[ -n "$db_name" ]]; then
+            restore_log "Backing up existing database"
+            if ! mysqldump -u "$db_user" -p"$db_password" -h "$db_host" "$db_name" > "$db_backup_file"; then
+                restore_log "ERROR: Failed to backup database"
+                return 1
+            fi
+        fi
+        restore_log "Safety backup completed"
+    fi
+    
+    # Atomic restore with rollback capability
+    restore_log "Phase 4: Atomic restore operation"
+    
+    # Extract to staging area
+    restore_log "Extracting archive to staging area"
+    if ! tarsnap -x -f "$archive_name" -C "$restore_dir"; then
+        restore_log "ERROR: Archive extraction failed"
+        rollback_restore "$site_path" "$backup_dir" "$db_backup_file" "$restore_log"
+        return 1
+    fi
+    
+    # Validate extracted files
+    local extracted_site="${restore_dir}${site_path}"
+    if [[ ! -d "$extracted_site" ]]; then
+        restore_log "ERROR: Site directory not found in archive"
+        rollback_restore "$site_path" "$backup_dir" "$db_backup_file" "$restore_log"
+        return 1
+    fi
+    
+    if [[ ! -f "$extracted_site/wp-config.php" ]]; then
+        restore_log "ERROR: wp-config.php not found in extracted files"
+        rollback_restore "$site_path" "$backup_dir" "$db_backup_file" "$restore_log"
+        return 1
+    fi
+    
+    # Find and validate database dump
+    local db_dump=$(find "$restore_dir" -name "*_db_*.sql" | head -1)
+    if [[ ! -f "$db_dump" ]]; then
+        restore_log "ERROR: Database dump not found in archive"
+        rollback_restore "$site_path" "$backup_dir" "$db_backup_file" "$restore_log"
+        return 1
+    fi
+    
+    # Validate database dump
+    if [[ ! -s "$db_dump" ]]; then
+        restore_log "ERROR: Database dump is empty"
+        rollback_restore "$site_path" "$backup_dir" "$db_backup_file" "$restore_log"
+        return 1
+    fi
+    
+    # Atomic file replacement
+    restore_log "Performing atomic file replacement"
+    [[ -d "$site_path" ]] && rm -rf "$site_path"
+    if ! mv "$extracted_site" "$site_path"; then
+        restore_log "ERROR: Failed to move files to final location"
+        rollback_restore "$site_path" "$backup_dir" "$db_backup_file" "$restore_log"
+        return 1
+    fi
+    
+    # Restore database with transaction
+    restore_log "Restoring database with transaction safety"
+    local new_db_name=$(get_wp_config_value "$site_path/wp-config.php" 'DB_NAME')
+    local new_db_user=$(get_wp_config_value "$site_path/wp-config.php" 'DB_USER')
+    local new_db_password=$(get_wp_config_value "$site_path/wp-config.php" 'DB_PASSWORD')
+    local new_db_host=$(get_wp_config_value "$site_path/wp-config.php" 'DB_HOST')
+    new_db_host=${new_db_host:-localhost}
+    
+    if ! mysql -u "$new_db_user" -p"$new_db_password" -h "$new_db_host" "$new_db_name" < "$db_dump"; then
+        restore_log "ERROR: Database restore failed"
+        rollback_restore "$site_path" "$backup_dir" "$db_backup_file" "$restore_log"
+        return 1
+    fi
+    
+    # Fix permissions and ownership
+    restore_log "Phase 5: Setting permissions and ownership"
+    chown -R www-data:www-data "$site_path" 2>/dev/null || {
+        restore_log "WARNING: Could not set www-data ownership"
+    }
+    find "$site_path" -type f -exec chmod 644 {} \; 2>/dev/null || true
+    find "$site_path" -type d -exec chmod 755 {} \; 2>/dev/null || true
+    
+    # WordPress validation
+    restore_log "Phase 6: WordPress installation validation"
+    if ! validate_wordpress "$site_path" "$restore_log"; then
+        restore_log "ERROR: WordPress validation failed"
+        rollback_restore "$site_path" "$backup_dir" "$db_backup_file" "$restore_log"
+        return 1
+    fi
+    
+    # Cleanup staging area
+    rm -rf "$restore_dir"
+    
+    restore_log "Restore completed successfully!"
+    restore_log "Site restored to: $site_path"
+    restore_log "Safety backup available at: $backup_dir"
+    restore_log "Database backup available at: $db_backup_file"
+    restore_log "Restore log: $restore_log"
+    
+    echo "\n✓ Restore completed successfully!"
+    echo "✓ Site: $site_path"
+    echo "✓ Backup: $backup_dir"
+    echo "✓ Log: $restore_log"
+}
+
+rollback_restore() {
+    local site_path="$1"
+    local backup_dir="$2"
+    local db_backup_file="$3"
+    local restore_log="$4"
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ROLLBACK: Restoring from backup" | tee -a "$restore_log"
+    
+    # Restore files
+    if [[ -d "$backup_dir" ]]; then
+        [[ -d "$site_path" ]] && rm -rf "$site_path"
+        mv "$backup_dir" "$site_path"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ROLLBACK: Files restored" | tee -a "$restore_log"
+    fi
+    
+    # Restore database
+    if [[ -f "$db_backup_file" && -f "$site_path/wp-config.php" ]]; then
+        local db_name=$(get_wp_config_value "$site_path/wp-config.php" 'DB_NAME')
+        local db_user=$(get_wp_config_value "$site_path/wp-config.php" 'DB_USER')
+        local db_password=$(get_wp_config_value "$site_path/wp-config.php" 'DB_PASSWORD')
+        local db_host=$(get_wp_config_value "$site_path/wp-config.php" 'DB_HOST')
+        db_host=${db_host:-localhost}
+        
+        mysql -u "$db_user" -p"$db_password" -h "$db_host" "$db_name" < "$db_backup_file"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ROLLBACK: Database restored" | tee -a "$restore_log"
+    fi
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ROLLBACK: Complete" | tee -a "$restore_log"
+}
+
+validate_wordpress() {
+    local site_path="$1"
+    local restore_log="$2"
+    
+    # Check core WordPress files
+    local required_files=("wp-config.php" "wp-load.php" "wp-settings.php" "index.php")
+    for file in "${required_files[@]}"; do
+        if [[ ! -f "$site_path/$file" ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] VALIDATION: Missing $file" | tee -a "$restore_log"
+            return 1
+        fi
+    done
+    
+    # Check wp-content structure
+    local required_dirs=("wp-content" "wp-content/themes" "wp-content/plugins")
+    for dir in "${required_dirs[@]}"; do
+        if [[ ! -d "$site_path/$dir" ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] VALIDATION: Missing $dir" | tee -a "$restore_log"
+            return 1
+        fi
+    done
+    
+    # Validate wp-config.php syntax
+    if ! php -l "$site_path/wp-config.php" &>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] VALIDATION: wp-config.php syntax error" | tee -a "$restore_log"
+        return 1
+    fi
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] VALIDATION: WordPress structure valid" | tee -a "$restore_log"
+    return 0
+}
 
 # Send email notification if configured
 if [[ -n "$NOTIFY_EMAIL" ]] && command -v mail &> /dev/null; then

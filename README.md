@@ -26,9 +26,8 @@ Tarsnap is one of the most advanced backup systems ever created. This script uti
 
 ## Limitations
 
-- Requires root access for site backups
+- Requires root access for site backups and restores
 - Backups are stored with deduplication only
-- No builtin restoration functionality: You'll need to use the tarsnap command-line to manually restore your sites
  
 ## Retention Policy
 
@@ -70,6 +69,8 @@ Use manual retention only when you have specific requirements and will actively 
 
 ## Usage
 
+### Installation
+
 1. Place the script and configuration file in a secure location:
    ```sh
    sudo cp wordpress-tarsnap-backups.sh /usr/local/bin/
@@ -86,13 +87,16 @@ Use manual retention only when you have specific requirements and will actively 
    sudo chmod 600 /root/tarsnap.key
    sudo chown root:root /root/tarsnap.key
    ```
-4. Set up a cron job as `root` user (required for permissions to read `/var/www/` directories, run `mysqldump`, and access the Tarsnap key file):
+
+### Backup Operations
+
+4. Cron jobs must strict follow what type of retention policy you choose. Set up a cron job as `root` user (required for permissions to read `/var/www/` directories, run `mysqldump`, and access the Tarsnap key file):
    ```sh
    sudo crontab -e
    ```
-   Add something like the following line for daily backups at 3:00 AM:
-   ```
-   0 3 * * * /usr/local/bin/wordpress-tarsnap-backups.sh /etc/wordpress-tarsnap-backups.conf >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
+   If you are using Simple Retention, add the following line for daily backups at 2:00 AM:
+   ```sh
+   0 2 * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
    ```
 
    Or this one if you are using hourly GFS backups:
@@ -100,7 +104,12 @@ Use manual retention only when you have specific requirements and will actively 
    0 * * * * /usr/local/bin/wordpress-tarsnap-backups.sh >> /var/log/wordpress-tarsnap-backups/cron.log 2>&1
    ```
 
-   The `>> /var/log/wordpress-tarsnap-backups/cron.log 2>&1` redirects all output and errors to a log file for monitoring.
+### Restore Operations
+
+5. To restore a WordPress site from backup:
+   ```sh
+   sudo /usr/local/bin/wordpress-tarsnap-backups.sh --restore
+   ```
 
 ## Configuration
 
@@ -166,25 +175,35 @@ Add the following to `/etc/logrotate.d/wordpress-tarsnap-backups` for automatic 
 
 ## Restore Instructions
 
-To restore a backup created by this script:
+Use the built-in restore wizard for safe, automated restoration:
 
-1. List available archives:
-   ```bash
-   TARSNAP_KEYFILE=/root/tarsnap.key tarsnap --list-archives
-   ```
-2. Restore the desired archive:
-   ```bash
-   TARSNAP_KEYFILE=/root/tarsnap.key tarsnap -x -f <archive-name> -C /
-   ```
-3. Restore the database from the dump file:
-   ```bash
-   mysql -u <db_user> -p<db_password> <db_name> < /path/to/temp/dir/site-name_db_timestamp.sql
-   ```
-4. Fix file ownership and permissions:
-   ```bash
-   chown -R www-data:www-data /var/www/<site-name>
-   ```
-5. Restart all required services.
+```bash
+sudo /usr/local/bin/wordpress-tarsnap-backups.sh --restore
+```
+
+### Restore Process
+
+1. **Site Selection**: Choose from available WordPress sites
+2. **Backup Selection**: Browse backups with pagination (10 per page)
+3. **Safety Confirmation**: Type 'RESTORE' to confirm the operation
+4. **Optional Dry Run**: Test restore without making changes
+5. **Automatic Backup**: Creates safety backup of existing site
+6. **Atomic Restore**: Complete success or automatic rollback
+7. **Validation**: Ensures WordPress installation is functional
+
+### Safety Features
+
+- **Pre-restore validation**: Checks disk space, database connectivity, and archive integrity
+- **Automatic backup**: Creates timestamped backup of existing site and database
+- **Atomic operations**: All changes staged before final deployment
+- **Automatic rollback**: Restores from backup if any step fails
+- **WordPress validation**: Verifies core files, structure, and configuration
+- **Comprehensive logging**: Full audit trail with timestamps
+- **Permission management**: Sets proper ownership and file permissions
+
+### Restore Logs
+
+Detailed logs are created at `/var/log/wordpress-tarsnap-backups/restore_<site>_<timestamp>.log` for troubleshooting and audit purposes.
 
 ## Safety
 

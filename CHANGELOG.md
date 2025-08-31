@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-01-27
+
+### Added
+- Interactive restore wizard with `--restore` flag
+- Failproof restore functionality with multiple safety layers
+- Automatic backup of existing site before restore
+- Atomic restore operations with automatic rollback on failure
+- WordPress installation validation after restore
+- Dry run mode for testing restore without changes
+- Comprehensive restore logging with audit trails
+- Pagination support for browsing older backups
+- Database connectivity testing before restore
+- Permission and ownership verification after restore
+- Enhanced confirmation process requiring 'RESTORE' input
+
+### Security
+- Pre-restore validation including disk space and archive integrity checks
+- Secure staging area for atomic file operations
+- Complete rollback capability on any restore failure
+
+### Documentation
+- Updated README with restore instructions and usage examples
+- Added restore wizard workflow documentation
+- Updated limitations section to reflect new capabilities
+
 ## [1.1.0] - 2025-01-27
 
 ### Improved

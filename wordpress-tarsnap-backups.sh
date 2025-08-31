@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.3.0
+# WordPress Tarsnap Backups v1.4.0
 # Automated backup and restore solution for WordPress sites using Tarsnap
 #
 # Features:
@@ -232,6 +232,13 @@ apply_gfs_retention() {
 # Start overall timing
 OVERALL_START=$(date +%s)
 
+# Display configuration information
+if [[ -n "$CONFIG_FILE" ]]; then
+    log "INFO" "MAIN" "Using configuration file: $CONFIG_FILE"
+else
+    log "INFO" "MAIN" "Using built-in default configuration"
+fi
+
 log "INFO" "MAIN" "Starting WordPress site backups to Tarsnap"
 log "INFO" "MAIN" "Configuration: SITES_ROOT=$SITES_ROOT, RETENTION_SCHEME=$RETENTION_SCHEME"
 
@@ -326,9 +333,26 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         printf 'host=%s\n' "$DB_HOST"
     } > "$MYSQL_CONN_OPTS"
 
-    # Perform database dump with timeout protection
+    # Perform database dump with timeout protection and progress indication
     DB_START=$(date +%s)
+    log "INFO" "$SITE_DIRNAME" "Database dump in progress... (timeout: 1 hour)"
+    
+    # Start background progress indicator for database dump
+    {
+        while kill -0 $$ 2>/dev/null; do
+            sleep 30
+            if [[ -f "$DB_DUMP_FILE" ]]; then
+                local size=$(stat -c%s "$DB_DUMP_FILE" 2>/dev/null || echo "0")
+                if (( size > 0 )); then
+                    log "INFO" "$SITE_DIRNAME" "Database dump progress: $(numfmt --to=iec $size) written..."
+                fi
+            fi
+        done
+    } &
+    local db_progress_pid=$!
+    
     if ! timeout 3600 mysqldump --defaults-extra-file="$MYSQL_CONN_OPTS" --single-transaction --routines --triggers "$DB_NAME" > "$DB_DUMP_FILE"; then
+        kill $db_progress_pid 2>/dev/null || true
         log "ERROR" "$SITE_DIRNAME" "mysqldump failed for database '$DB_NAME'"
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: mysqldump failed")
@@ -338,6 +362,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         DB_DUMP_FILE=""
         continue
     fi
+    kill $db_progress_pid 2>/dev/null || true
     DB_END=$(date +%s)
     DB_DURATION=$((DB_END - DB_START))
 
@@ -366,14 +391,26 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
     TARSNAP_ARCHIVE_NAME="${SAFE_SITE_NAME}-${DATE}"
     TARSNAP_EXCLUDES=("--exclude=*/wp-content/cache" "--exclude=*/wp-content/updraft" "--exclude=*/wp-content/backup*" "--exclude=*/wp-content/uploads/backup*")
     
-    # Perform Tarsnap backup
+    # Start background progress indicator for Tarsnap backup
     TARSNAP_START=$(date +%s)
+    log "INFO" "$SITE_DIRNAME" "Tarsnap backup in progress..."
+    {
+        while kill -0 $$ 2>/dev/null; do
+            sleep 60
+            local elapsed=$(( $(date +%s) - TARSNAP_START ))
+            log "INFO" "$SITE_DIRNAME" "Tarsnap backup running... (${elapsed}s elapsed)"
+        done
+    } &
+    local tarsnap_progress_pid=$!
+    
+    # Perform Tarsnap backup
     if tarsnap \
         --quiet \
         -c -f "$TARSNAP_ARCHIVE_NAME" \
         "${TARSNAP_EXCLUDES[@]}" \
         "$SITE_PATH" \
         "$DB_DUMP_FILE"; then
+        kill $tarsnap_progress_pid 2>/dev/null || true
         TARSNAP_END=$(date +%s)
         TARSNAP_DURATION=$((TARSNAP_END - TARSNAP_START))
         
@@ -431,6 +468,7 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         # --- End Retention Policy ---
 
     else
+        kill $tarsnap_progress_pid 2>/dev/null || true
         TARSNAP_END=$(date +%s)
         TARSNAP_DURATION=$((TARSNAP_END - TARSNAP_START))
         log "ERROR" "$SITE_DIRNAME" "Tarsnap backup failed after ${TARSNAP_DURATION}s"

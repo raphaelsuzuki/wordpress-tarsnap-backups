@@ -22,6 +22,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Better monitoring and troubleshooting capabilities
 - Enhanced logging with performance insights
 
+## [1.4.0] - 2025-01-27
+
+### Added
+- Progress indicators for long-running database dumps and Tarsnap backup operations
+- Real-time file size updates during database dumps (every 30 seconds)
+- Elapsed time tracking for Tarsnap backup operations (every 60 seconds)
+- Configuration file display showing which config is being used
+- Enhanced backup statistics with timing and size information
+- Improved error tracking with detailed error messages in notifications
+
+### Improved
+- Better visibility into backup progress for long-running operations
+- Enhanced logging with operation timing and performance metrics
+- More informative email notifications with backup statistics
+- Minimal performance overhead from background progress monitoring
+
 ## [1.2.0] - 2025-01-27
 
 ### Added

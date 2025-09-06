@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.4.1
+# WordPress Tarsnap Backups v1.4.2
 # Automated backup and restore solution for WordPress sites using Tarsnap
 #
 # Features:
 # - Auto-discovery of WordPress installations
 # - Three retention schemes: Simple, GFS, and Manual
-# - External configuration file support
-# - Comprehensive error handling and email notifications
-# - Failproof restore with automatic rollback and validation
+# - Multiple custom configuration files support
+# - Error handling and email notifications
+# - Restore functionality with automatic rollback and validation
 #
 # Requirements: tarsnap, mysqldump, mail (optional)
 # License: MIT
@@ -32,6 +32,7 @@ GFS_MONTHLY_KEEP=12
 GFS_YEARLY_KEEP=3
 NOTIFY_EMAIL=""
 EXCLUDED_SITES="22222 html"
+INCLUDED_SITES=""
 
 # Load configuration file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,8 +64,9 @@ else
     echo "Warning: No configuration file found, using defaults"
 fi
 
-# Convert space-separated EXCLUDED_SITES to array
+# Convert space-separated EXCLUDED_SITES and INCLUDED_SITES to arrays
 read -ra EXCLUDED_SITES_ARRAY <<< "$EXCLUDED_SITES"
+read -ra INCLUDED_SITES_ARRAY <<< "$INCLUDED_SITES"
 
 # Check for restore mode
 if [[ "${1:-}" == "--restore" ]]; then
@@ -260,6 +262,21 @@ fi
 for SITE_PATH in "$SITES_ROOT"/*/; do
     [[ -d "$SITE_PATH" ]] || continue
     SITE_DIRNAME=$(basename "$SITE_PATH")
+    
+    # Check INCLUDED_SITES filter (overrides EXCLUDED_SITES when set)
+    if [[ -n "$INCLUDED_SITES" ]]; then
+        # If INCLUDED_SITES is set, only process sites in that list
+        if [[ ! " ${INCLUDED_SITES_ARRAY[*]} " =~ " ${SITE_DIRNAME} " ]]; then
+            continue
+        fi
+    else
+        # If INCLUDED_SITES is empty, use EXCLUDED_SITES logic
+        if [[ " ${EXCLUDED_SITES_ARRAY[*]} " =~ " ${SITE_DIRNAME} " ]]; then
+            log "INFO" "MAIN" "Skipping excluded site: $SITE_DIRNAME"
+            continue
+        fi
+    fi
+    
     WP_CONFIG_PATH="${SITE_PATH}/wp-config.php"
 
     # Check if the site is in the exclusion list
@@ -417,17 +434,20 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         # Get archive size information
         ARCHIVE_STATS=$(tarsnap --print-stats -f "$TARSNAP_ARCHIVE_NAME" 2>/dev/null || echo "")
         if [[ -n "$ARCHIVE_STATS" ]]; then
-            TOTAL_SIZE=$(echo "$ARCHIVE_STATS" | grep "Total size" | awk '{print $3}' || echo "unknown")
-            COMPRESSED_SIZE=$(echo "$ARCHIVE_STATS" | grep "Compressed size" | awk '{print $3}' || echo "unknown")
-            log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s, $TOTAL_SIZE → $COMPRESSED_SIZE)"
+            TOTAL_SIZE_BYTES=$(echo "$ARCHIVE_STATS" | grep "Total size" | awk '{print $3}' | sed 's/[^0-9]//g' || echo "0")
+            COMPRESSED_SIZE_BYTES=$(echo "$ARCHIVE_STATS" | grep "Compressed size" | awk '{print $3}' | sed 's/[^0-9]//g' || echo "0")
+            ARCHIVE_SIZE=$(numfmt --to=iec "$TOTAL_SIZE_BYTES" 2>/dev/null || echo "unknown")
+            COMPRESSED_SIZE=$(numfmt --to=iec "$COMPRESSED_SIZE_BYTES" 2>/dev/null || echo "unknown")
+            log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s, $ARCHIVE_SIZE → $COMPRESSED_SIZE)"
         else
+            ARCHIVE_SIZE="unknown"
             log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s)"
         fi
         
         # Calculate total site backup time
         SITE_END=$(date +%s)
         SITE_DURATION=$((SITE_END - SITE_START))
-        BACKUP_STATS+=("$SITE_DIRNAME: ${SITE_DURATION}s total (DB: ${DB_DURATION}s, Archive: ${TARSNAP_DURATION}s, Size: ${TOTAL_SIZE:-unknown})")
+        BACKUP_STATS+=("$SITE_DIRNAME: ${SITE_DURATION}s total (DB: ${DB_DURATION}s, Archive: ${TARSNAP_DURATION}s, Size: ${ARCHIVE_SIZE})")
 
         # --- Retention Policy ---
         if [[ "$RETENTION_SCHEME" == "gfs" ]]; then
@@ -475,6 +495,11 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: Tarsnap backup failed")
         ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Tarsnap backup failed after ${TARSNAP_DURATION}s (check network, key file, or disk space)")
+        
+        # Set failed backup stats
+        SITE_END=$(date +%s)
+        SITE_DURATION=$((SITE_END - SITE_START))
+        BACKUP_STATS+=("$SITE_DIRNAME: ${SITE_DURATION}s total (DB: ${DB_DURATION}s, Archive: FAILED after ${TARSNAP_DURATION}s)")
     fi
 
     log "INFO" "$SITE_DIRNAME" "Cleaning up temporary files"

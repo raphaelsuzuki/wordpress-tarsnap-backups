@@ -14,7 +14,7 @@ Tarsnap is one of the most advanced backup systems ever created. This script uti
 4. **File Backup:** Archives site files excluding cache and backup directories. You can also exclude any unwanted site from your backups.
 5. **Secure Storage:** Tarsnap is end-to-end encrypted and has deduplication on remote storages by default.
 6. **Retention Management:** Automatically removes old backups based on many configurable policies.
-7. **Error Handling:** Comprehensive error checking with secure cleanup of temporary files.
+7. **Error Handling:** Error checking with secure cleanup of temporary files.
 8. **Logging:** Detailed logging of all backup operations and errors.
 9. **Email Notifications:** Sends completion and error (if any) notifications via email.
 
@@ -111,6 +111,8 @@ Use manual retention only when you have specific requirements and will actively 
    sudo /usr/local/bin/wordpress-tarsnap-backups.sh --restore
    ```
 
+
+
 ## Configuration
 
 The script uses an external configuration file `wordpress-tarsnap-backups.conf`.
@@ -138,11 +140,37 @@ When run **without arguments**, the script searches for configuration files in t
 - **Temp directory:** `TEMP_BACKUP_DIR` - For database dumps (default: `/tmp`)
 - **Tarsnap key:** `TARSNAP_KEY_FILE` - Path to Tarsnap key file (default: `/root/tarsnap.key`)
 - **Log directory:** `LOG_DIR` - Log storage location (default: `/var/log/wordpress-tarsnap-backups`)
-- **Excluded sites:** `EXCLUDED_SITES` - Space-separated list of site directories to skip
+- **Site selection:** 
+  - `EXCLUDED_SITES` - Space-separated list of site directories to skip
+  - `INCLUDED_SITES` - Space-separated list of site directories to backup exclusively (overrides EXCLUDED_SITES when set)
 - **Retention policy:** `RETENTION_SCHEME` - Choose `"simple"`, `"gfs"`, or `"manual"`
   - Simple: `RETENTION_DAYS` and `MIN_BACKUPS_TO_KEEP`
   - GFS: `GFS_HOURLY_KEEP`, `GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`, `GFS_MONTHLY_KEEP`, `GFS_YEARLY_KEEP`
 - **Email notifications:** `NOTIFY_EMAIL` - Email address for notifications
+
+## Selective Site Processing
+
+The script supports two modes for controlling which sites get backed up:
+
+### Default Mode (All Sites)
+```bash
+# Backup all sites except excluded ones
+INCLUDED_SITES=""
+EXCLUDED_SITES="22222 html staging"
+```
+
+### Selective Mode (Specific Sites Only)
+```bash
+# Backup ONLY these sites (ignores EXCLUDED_SITES)
+INCLUDED_SITES="example.com site2.com"
+EXCLUDED_SITES="22222 html"  # This is ignored when INCLUDED_SITES is set
+```
+
+### Use Cases
+- **Single site backups:** Set `INCLUDED_SITES="example.com"` for site-specific configurations
+- **Subset backups:** Backup only critical sites during maintenance windows
+- **Testing:** Backup staging sites separately from production
+- **Flexible scheduling:** Different cron jobs for different site groups
 
 ## Log Management
 

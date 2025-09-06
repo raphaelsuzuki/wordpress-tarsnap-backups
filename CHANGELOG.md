@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - More informative email notifications with backup statistics
 - Minimal performance overhead from background progress monitoring
 
+## [1.4.2] - 2025-01-27
+
+### Added
+- INCLUDED_SITES configuration option for selective site processing
+- Support for backing up only specific sites when INCLUDED_SITES is set
+- Enhanced site filtering logic with INCLUDED_SITES overriding EXCLUDED_SITES
+
+### Improved
+- Better site selection flexibility with inclusion/exclusion options
+- Cleaner configuration with selective backup capabilities
+
 ## [1.3.0] - 2025-01-27
 
 ### Added

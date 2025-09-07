@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.4.2
+# WordPress Tarsnap Backups v1.4.3
 # Automated backup and restore solution for WordPress sites using Tarsnap
 #
 # Features:
@@ -33,6 +33,7 @@ GFS_YEARLY_KEEP=3
 NOTIFY_EMAIL=""
 EXCLUDED_SITES="22222 html"
 INCLUDED_SITES=""
+EXCLUDED_DIRECTORIES="cache logs tmp uploads/cache wp-content/cache wp-content/updraft wp-content/backup* wp-content/uploads/backup*"
 
 # Load configuration file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,9 +65,16 @@ else
     echo "Warning: No configuration file found, using defaults"
 fi
 
-# Convert space-separated EXCLUDED_SITES and INCLUDED_SITES to arrays
+# Convert space-separated EXCLUDED_SITES, INCLUDED_SITES, and EXCLUDED_DIRECTORIES (directory patterns for backup exclusion) to arrays
 read -ra EXCLUDED_SITES_ARRAY <<< "$EXCLUDED_SITES"
 read -ra INCLUDED_SITES_ARRAY <<< "$INCLUDED_SITES"
+read -ra EXCLUDED_DIRECTORIES_ARRAY <<< "$EXCLUDED_DIRECTORIES"
+
+# Build tarsnap exclusion patterns once
+TARSNAP_EXCLUDES=()
+for exclude_dir in "${EXCLUDED_DIRECTORIES_ARRAY[@]}"; do
+    [[ -n "$exclude_dir" ]] && TARSNAP_EXCLUDES+=("--exclude=*/$exclude_dir")
+done
 
 # Check for restore mode
 if [[ "${1:-}" == "--restore" ]]; then
@@ -406,7 +414,6 @@ for SITE_PATH in "$SITES_ROOT"/*/; do
 
     # Create safe archive name
     TARSNAP_ARCHIVE_NAME="${SAFE_SITE_NAME}-${DATE}"
-    TARSNAP_EXCLUDES=("--exclude=*/wp-content/cache" "--exclude=*/wp-content/updraft" "--exclude=*/wp-content/backup*" "--exclude=*/wp-content/uploads/backup*")
     
     # Start background progress indicator for Tarsnap backup
     TARSNAP_START=$(date +%s)

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2025-01-27
+
+### Added
+- EXCLUDED_DIRECTORIES configuration option for fine-grained directory exclusion
+- Support for excluding specific directory patterns from all site backups
+- Configurable directory exclusions via space-separated list in config file
+
+### Improved
+- More granular control over what gets backed up within each site
+- Default exclusions for common cache and temporary directories
+
+## [1.4.2] - 2025-01-27
+
+### Added
+- INCLUDED_SITES configuration option for selective site processing
+- Support for backing up only specific sites when INCLUDED_SITES is set
+- Enhanced site filtering logic with INCLUDED_SITES overriding EXCLUDED_SITES
+
+### Improved
+- Better site selection flexibility with inclusion/exclusion options
+- Cleaner configuration with selective backup capabilities
+
 ## [1.4.1] - 2025-01-27
 
 ### Fixed
@@ -27,17 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced logging with operation timing and performance metrics
 - More informative email notifications with backup statistics
 - Minimal performance overhead from background progress monitoring
-
-## [1.4.2] - 2025-01-27
-
-### Added
-- INCLUDED_SITES configuration option for selective site processing
-- Support for backing up only specific sites when INCLUDED_SITES is set
-- Enhanced site filtering logic with INCLUDED_SITES overriding EXCLUDED_SITES
-
-### Improved
-- Better site selection flexibility with inclusion/exclusion options
-- Cleaner configuration with selective backup capabilities
 
 ## [1.3.0] - 2025-01-27
 

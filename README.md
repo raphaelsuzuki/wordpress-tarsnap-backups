@@ -143,6 +143,7 @@ When run **without arguments**, the script searches for configuration files in t
 - **Site selection:** 
   - `EXCLUDED_SITES` - Space-separated list of site directories to skip
   - `INCLUDED_SITES` - Space-separated list of site directories to backup exclusively (overrides EXCLUDED_SITES when set)
+- **Directory exclusion:** `EXCLUDED_DIRECTORIES` - Space-separated list of directory patterns to exclude from all site backups
 - **Retention policy:** `RETENTION_SCHEME` - Choose `"simple"`, `"gfs"`, or `"manual"`
   - Simple: `RETENTION_DAYS` and `MIN_BACKUPS_TO_KEEP`
   - GFS: `GFS_HOURLY_KEEP`, `GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`, `GFS_MONTHLY_KEEP`, `GFS_YEARLY_KEEP`
@@ -171,6 +172,31 @@ EXCLUDED_SITES="22222 html"  # This is ignored when INCLUDED_SITES is set
 - **Subset backups:** Backup only critical sites during maintenance windows
 - **Testing:** Backup staging sites separately from production
 - **Flexible scheduling:** Different cron jobs for different site groups
+
+## Directory Exclusion
+
+The script supports fine-grained directory exclusion through the `EXCLUDED_DIRECTORIES` configuration:
+
+```bash
+# Exclude specific directory patterns from all site backups
+EXCLUDED_DIRECTORIES="cache logs tmp uploads/cache wp-content/cache wp-content/updraft wp-content/backup*"
+```
+
+### Default Exclusions
+- `cache` - General cache directories
+- `logs` - Log directories
+- `tmp` - Temporary directories
+- `uploads/cache` - WordPress upload cache
+- `wp-content/cache` - WordPress cache
+- `wp-content/updraft` - UpdraftPlus backups
+- `wp-content/backup*` - General backup directories
+- `wp-content/uploads/backup*` - Upload backup directories
+
+### Customization
+- Modify the list to suit your specific needs
+- Supports wildcard patterns (e.g., `backup*`)
+- Applies to all sites in the backup process
+- Helps reduce backup size and avoid backing up temporary files
 
 ## Log Management
 

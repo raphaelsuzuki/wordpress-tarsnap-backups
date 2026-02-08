@@ -17,10 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved temporary file security with defense-in-depth approach (umask + chmod)
 - All MySQL credential files now created with secure permissions from the start
 
+### Performance
+- **Cache archive list**: Single `tarsnap --list-archives` call at startup, cached for all retention operations
+- **Optional progress indicators**: New `SHOW_PROGRESS` config option (default: yes)
+- **Optional archive statistics**: New `PRINT_STATS` config option to skip additional network calls (default: yes)
+- Replaced inefficient string operations with bash parameter expansion (awk/sed → bash built-ins)
+- Eliminated redundant network calls during retention policy application
+
+### Added
+- `SHOW_PROGRESS` configuration option for controlling progress indicators
+- `PRINT_STATS` configuration option for controlling archive statistics fetching
+- Performance tuning section in README
+
 ### Improved
 - Database host validation now includes port number support
 - Better error messages for invalid credentials and configuration
 - More robust input validation throughout restore workflow
+- Reduced network overhead for multi-site backups
+- Faster retention policy processing with cached archive lists
 
 ## [1.5.0] - 2025-01-27
 

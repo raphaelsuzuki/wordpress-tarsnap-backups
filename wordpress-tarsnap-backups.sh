@@ -31,6 +31,8 @@ GFS_WEEKLY_KEEP=4
 GFS_MONTHLY_KEEP=12
 GFS_YEARLY_KEEP=3
 NOTIFY_EMAIL=""
+SHOW_PROGRESS="yes"
+PRINT_STATS="yes"
 EXCLUDED_SITES="22222 html"
 INCLUDED_SITES=""
 EXCLUDED_DIRECTORIES="cache logs tmp uploads/cache wp-content/cache wp-content/updraft wp-content/backup* wp-content/uploads/backup*"
@@ -93,9 +95,10 @@ restore_mode() {
     echo "WordPress Tarsnap Restore Wizard"
     echo "================================="
     
-    # List available archives
+    # List available archives (fetch fresh list for restore mode)
     printf "\nFetching available backups...\n"
-    mapfile -t archives < <(tarsnap --list-archives | grep -E '^[^-]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$' | sort -t- -k2,2nr -k3,3nr -k4,4nr -k5,5nr)
+    local archives_list=$(tarsnap --list-archives 2>/dev/null || echo "")
+    mapfile -t archives < <(echo "$archives_list" | grep -E '^[^-]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$' | sort -t- -k2,2nr -k3,3nr -k4,4nr -k5,5nr)
     
     if [[ ${#archives[@]} -eq 0 ]]; then
         echo "No backups found."
@@ -536,6 +539,13 @@ if [[ "${1:-}" == "--restore" ]]; then
     exit 0
 fi
 
+# Cache tarsnap archive list for performance (single network call)
+log "INFO" "MAIN" "Fetching archive list from Tarsnap..."
+TARSNAP_ARCHIVES_CACHE=$(tarsnap --list-archives 2>/dev/null || echo "")
+if [[ -z "$TARSNAP_ARCHIVES_CACHE" ]]; then
+    log "WARNING" "MAIN" "No archives found or unable to fetch archive list"
+fi
+
 # Set Tarsnap key file environment variable
 export TARSNAP_KEYFILE="$TARSNAP_KEY_FILE"
 
@@ -739,7 +749,8 @@ apply_gfs_retention() {
     local site_name="$1"
     local safe_site_name="$2"
     
-    mapfile -t all_archives < <(tarsnap --list-archives | grep "^${safe_site_name}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
+    # Use cached archive list instead of making another network call
+    mapfile -t all_archives < <(echo "$TARSNAP_ARCHIVES_CACHE" | grep "^${safe_site_name}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
     
     local now_epoch=$(date +%s)
     local hourly_cutoff=$((now_epoch - GFS_HOURLY_KEEP * 3600))
@@ -901,22 +912,25 @@ for SITE_INFO in "${WORDPRESS_SITES[@]}"; do
     DB_START=$(date +%s)
     log "INFO" "$SITE_DIRNAME" "Database dump in progress... (timeout: 1 hour)"
     
-    # Start background progress indicator for database dump
-    {
-        while kill -0 $$ 2>/dev/null; do
-            sleep 30
-            if [[ -f "$DB_DUMP_FILE" ]]; then
-                size=$(stat -c%s "$DB_DUMP_FILE" 2>/dev/null || echo "0")
-                if (( size > 0 )); then
-                    log "INFO" "$SITE_DIRNAME" "Database dump progress: $(numfmt --to=iec $size) written..."
+    # Start background progress indicator for database dump (if enabled)
+    db_progress_pid=""
+    if [[ "${SHOW_PROGRESS:-yes}" == "yes" ]]; then
+        {
+            while kill -0 $$ 2>/dev/null; do
+                sleep 30
+                if [[ -f "$DB_DUMP_FILE" ]]; then
+                    size=$(stat -c%s "$DB_DUMP_FILE" 2>/dev/null || echo "0")
+                    if (( size > 0 )); then
+                        log "INFO" "$SITE_DIRNAME" "Database dump progress: $(numfmt --to=iec $size) written..."
+                    fi
                 fi
-            fi
-        done
-    } &
-    db_progress_pid=$!
+            done
+        } &
+        db_progress_pid=$!
+    fi
     
     if ! timeout 3600 mysqldump --defaults-extra-file="$MYSQL_CONN_OPTS" --single-transaction --routines --triggers "$DB_NAME" > "$DB_DUMP_FILE"; then
-        kill $db_progress_pid 2>/dev/null || true
+        [[ -n "$db_progress_pid" ]] && kill "$db_progress_pid" 2>/dev/null || true
         log "ERROR" "$SITE_DIRNAME" "mysqldump failed for database '$DB_NAME'"
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: mysqldump failed")
@@ -926,7 +940,7 @@ for SITE_INFO in "${WORDPRESS_SITES[@]}"; do
         DB_DUMP_FILE=""
         continue
     fi
-    kill $db_progress_pid 2>/dev/null || true
+    [[ -n "$db_progress_pid" ]] && kill "$db_progress_pid" 2>/dev/null || true
     DB_END=$(date +%s)
     DB_DURATION=$((DB_END - DB_START))
 
@@ -954,17 +968,20 @@ for SITE_INFO in "${WORDPRESS_SITES[@]}"; do
     # Create safe archive name
     TARSNAP_ARCHIVE_NAME="${SAFE_SITE_NAME}-${DATE}"
     
-    # Start background progress indicator for Tarsnap backup
+    # Start background progress indicator for Tarsnap backup (if enabled)
     TARSNAP_START=$(date +%s)
     log "INFO" "$SITE_DIRNAME" "Tarsnap backup in progress..."
-    {
-        while kill -0 $$ 2>/dev/null; do
-            sleep 60
-            elapsed=$(( $(date +%s) - TARSNAP_START ))
-            log "INFO" "$SITE_DIRNAME" "Tarsnap backup running... (${elapsed}s elapsed)"
-        done
-    } &
-    tarsnap_progress_pid=$!
+    tarsnap_progress_pid=""
+    if [[ "${SHOW_PROGRESS:-yes}" == "yes" ]]; then
+        {
+            while kill -0 $$ 2>/dev/null; do
+                sleep 60
+                elapsed=$(( $(date +%s) - TARSNAP_START ))
+                log "INFO" "$SITE_DIRNAME" "Tarsnap backup running... (${elapsed}s elapsed)"
+            done
+        } &
+        tarsnap_progress_pid=$!
+    fi
     
     # Perform Tarsnap backup
     if tarsnap \
@@ -973,20 +990,30 @@ for SITE_INFO in "${WORDPRESS_SITES[@]}"; do
         "${TARSNAP_EXCLUDES[@]}" \
         "$SITE_PATH" \
         "$DB_DUMP_FILE"; then
-        kill $tarsnap_progress_pid 2>/dev/null || true
+        [[ -n "$tarsnap_progress_pid" ]] && kill "$tarsnap_progress_pid" 2>/dev/null || true
         TARSNAP_END=$(date +%s)
         TARSNAP_DURATION=$((TARSNAP_END - TARSNAP_START))
         
-        # Get archive size information
-        ARCHIVE_STATS=$(tarsnap --print-stats -f "$TARSNAP_ARCHIVE_NAME" 2>/dev/null || echo "")
-        if [[ -n "$ARCHIVE_STATS" ]]; then
-            TOTAL_SIZE_BYTES=$(echo "$ARCHIVE_STATS" | grep "Total size" | awk '{print $3}' | sed 's/[^0-9]//g' || echo "0")
-            COMPRESSED_SIZE_BYTES=$(echo "$ARCHIVE_STATS" | grep "Compressed size" | awk '{print $3}' | sed 's/[^0-9]//g' || echo "0")
-            ARCHIVE_SIZE=$(numfmt --to=iec "$TOTAL_SIZE_BYTES" 2>/dev/null || echo "unknown")
-            COMPRESSED_SIZE=$(numfmt --to=iec "$COMPRESSED_SIZE_BYTES" 2>/dev/null || echo "unknown")
-            log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s, $ARCHIVE_SIZE → $COMPRESSED_SIZE)"
+        # Get archive size information (if enabled)
+        ARCHIVE_SIZE="unknown"
+        COMPRESSED_SIZE="unknown"
+        if [[ "${PRINT_STATS:-yes}" == "yes" ]]; then
+            ARCHIVE_STATS=$(tarsnap --print-stats -f "$TARSNAP_ARCHIVE_NAME" 2>/dev/null || echo "")
+            if [[ -n "$ARCHIVE_STATS" ]]; then
+                # Use bash parameter expansion instead of external commands
+                TOTAL_SIZE_LINE=$(echo "$ARCHIVE_STATS" | grep "Total size")
+                COMPRESSED_SIZE_LINE=$(echo "$ARCHIVE_STATS" | grep "Compressed size")
+                TOTAL_SIZE_BYTES="${TOTAL_SIZE_LINE##* }"
+                TOTAL_SIZE_BYTES="${TOTAL_SIZE_BYTES//[^0-9]/}"
+                COMPRESSED_SIZE_BYTES="${COMPRESSED_SIZE_LINE##* }"
+                COMPRESSED_SIZE_BYTES="${COMPRESSED_SIZE_BYTES//[^0-9]/}"
+                ARCHIVE_SIZE=$(numfmt --to=iec "${TOTAL_SIZE_BYTES:-0}" 2>/dev/null || echo "unknown")
+                COMPRESSED_SIZE=$(numfmt --to=iec "${COMPRESSED_SIZE_BYTES:-0}" 2>/dev/null || echo "unknown")
+                log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s, $ARCHIVE_SIZE → $COMPRESSED_SIZE)"
+            else
+                log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s)"
+            fi
         else
-            ARCHIVE_SIZE="unknown"
             log "INFO" "$SITE_DIRNAME" "Tarsnap backup successful: $TARSNAP_ARCHIVE_NAME (${TARSNAP_DURATION}s)"
         fi
         
@@ -1001,7 +1028,8 @@ for SITE_INFO in "${WORDPRESS_SITES[@]}"; do
             apply_gfs_retention "$SITE_DIRNAME" "$SAFE_SITE_NAME"
         elif [[ "$RETENTION_SCHEME" == "simple" ]]; then
             log "INFO" "$SITE_DIRNAME" "Applying simple retention policy (${RETENTION_DAYS}d, min ${MIN_BACKUPS_TO_KEEP} backups)"
-            mapfile -t all_archives < <(tarsnap --list-archives | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
+            # Use cached archive list instead of making another network call
+            mapfile -t all_archives < <(echo "$TARSNAP_ARCHIVES_CACHE" | grep "^${SAFE_SITE_NAME}-[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}$" | sort -r)
             
             for i in "${!all_archives[@]}"; do
                 archive="${all_archives[i]}"
@@ -1034,7 +1062,7 @@ for SITE_INFO in "${WORDPRESS_SITES[@]}"; do
         # --- End Retention Policy ---
 
     else
-        kill $tarsnap_progress_pid 2>/dev/null || true
+        [[ -n "$tarsnap_progress_pid" ]] && kill "$tarsnap_progress_pid" 2>/dev/null || true
         TARSNAP_END=$(date +%s)
         TARSNAP_DURATION=$((TARSNAP_END - TARSNAP_START))
         log "ERROR" "$SITE_DIRNAME" "Tarsnap backup failed after ${TARSNAP_DURATION}s"

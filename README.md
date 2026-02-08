@@ -148,6 +148,18 @@ When run **without arguments**, the script searches for configuration files in t
   - Simple: `RETENTION_DAYS` and `MIN_BACKUPS_TO_KEEP`
   - GFS: `GFS_HOURLY_KEEP`, `GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`, `GFS_MONTHLY_KEEP`, `GFS_YEARLY_KEEP`
 - **Email notifications:** `NOTIFY_EMAIL` - Email address for notifications
+- **Performance options:**
+  - `SHOW_PROGRESS` - Show progress indicators during long operations (`yes`/`no`, default: `yes`)
+  - `PRINT_STATS` - Print detailed archive statistics after backup (`yes`/`no`, default: `yes`)
+    - Note: When enabled, makes an additional network call to Tarsnap servers
+
+### Performance Tuning
+
+The script includes configurable performance options:
+
+- **Progress Indicators** (`SHOW_PROGRESS`): Shows real-time progress during database dumps and Tarsnap uploads. Disable for slightly faster operations in automated environments where output isn't monitored.
+
+- **Archive Statistics** (`PRINT_STATS`): Fetches detailed size information after each backup. Disable to skip the additional network call to Tarsnap servers, reducing backup time by a few seconds per site.
 
 ## Selective Site Processing
 

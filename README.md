@@ -69,7 +69,27 @@ Use manual retention only when you have specific requirements and will actively 
 
 ## Usage
 
-### Installation
+### Quick Install
+
+Install directly from GitHub:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/raphaelsuzuki/wordpress-tarsnap-backups/main/install.sh | sudo bash
+```
+
+Or from your local copy:
+
+```sh
+sudo ./install.sh
+```
+
+Test the installation first with dry-run mode:
+
+```sh
+./install.sh --dry-run
+```
+
+### Manual Installation
 
 1. Place the script and configuration file in a secure location:
    ```sh

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Installation script (`install.sh`) with automatic setup
+- Dry-run mode for testing installation without making changes
+- Automatic dependency checking (tarsnap, mysqldump)
+- Interactive configuration and cron setup
+- Support for both local and GitHub-based installation
+
 ## [1.6.0] - 2025-02-08
 
 ### Security

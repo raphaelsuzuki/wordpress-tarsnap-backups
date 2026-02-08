@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2025-01-27
+
+### Security
+- Added path traversal protection against symlink directory attacks
+- Enhanced WordPress site discovery with realpath validation
+- Secure site directory validation to prevent malicious path access
+
+### Added
+- Support for flexible WordPress structures (root and htdocs configurations)
+- WordOps-style WordPress installation support
+- Enhanced site discovery function with structured output
+- Better error reporting for skipped sites with detailed reasons
+
+### Fixed
+- Fixed archive listing order in restore wizard to show newest backups first
+- Corrected chronological sorting of backup archives instead of lexicographic
+
+### Improved
+- Removed duplicate exclusion logic in site processing
+- More robust WordPress installation detection
+- Cleaner site filtering with centralized logic
+- Enhanced logging for site discovery process
+
 ## [1.4.4] - 2025-01-27
 
 ### Improved

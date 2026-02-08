@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.4.4
+# WordPress Tarsnap Backups v1.5.0
 # Automated backup and restore solution for WordPress sites using Tarsnap
 #
 # Features:
@@ -88,7 +88,7 @@ restore_mode() {
     
     # List available archives
     printf "\nFetching available backups...\n"
-    mapfile -t archives < <(tarsnap --list-archives | grep -E '^[^-]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$' | sort -r)
+    mapfile -t archives < <(tarsnap --list-archives | grep -E '^[^-]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$' | sort -t- -k2,2nr -k3,3nr -k4,4nr -k5,5nr)
     
     if [[ ${#archives[@]} -eq 0 ]]; then
         echo "No backups found."
@@ -580,6 +580,77 @@ fi
 
 # --- End Pre-flight Checks ---
 
+# WordPress Site Discovery Function with security checks
+find_wordpress_sites() {
+    local sites_root="$1"
+    local excluded_sites="$2"
+    local included_sites="$3"
+    
+    local found_sites=()
+    local excluded_found=()
+    
+    for SITE_DIR in "${sites_root}"/*/; do
+        SITE_DIR="${SITE_DIR%/}"
+        SITE_NAME=$(basename "${SITE_DIR}")
+        
+        # Skip if no sites found (glob didn't match)
+        [[ -d "${SITE_DIR}" ]] || continue
+        
+        # Prevent symlink directory traversal attacks
+        REAL_SITE_DIR=$(realpath "${SITE_DIR}" 2>/dev/null || echo "")
+        REAL_SITES_ROOT=$(realpath "${sites_root}" 2>/dev/null || echo "")
+        if [[ -z "${REAL_SITE_DIR}" || -z "${REAL_SITES_ROOT}" || "${REAL_SITE_DIR}" != "${REAL_SITES_ROOT}"/* ]]; then
+            log "WARNING" "MAIN" "SECURITY: Skipping ${SITE_NAME}: Path traversal detected or invalid path"
+            continue
+        fi
+
+        # Include/Exclude Sites Logic
+        if [[ -n "${included_sites}" ]]; then
+            if [[ ! " ${included_sites} " =~ " ${SITE_NAME} " ]]; then
+                excluded_found+=("${SITE_NAME}")
+                continue
+            fi
+        else
+            if [[ " ${excluded_sites} " =~ " ${SITE_NAME} " ]]; then
+                excluded_found+=("${SITE_NAME}")
+                continue
+            fi
+        fi
+
+        # Check for WordPress installation (flexible structure)
+        WP_ROOT_PATH="${SITE_DIR}"
+        WP_CONFIG_PATH=""
+        
+        # Check for wp-config.php in multiple locations
+        if [[ -f "${SITE_DIR}/wp-config.php" ]]; then
+            WP_CONFIG_PATH="${SITE_DIR}/wp-config.php"
+        elif [[ -f "${SITE_DIR}/htdocs/wp-config.php" ]]; then
+            WP_CONFIG_PATH="${SITE_DIR}/htdocs/wp-config.php"
+            WP_ROOT_PATH="${SITE_DIR}/htdocs"
+        else
+            log "INFO" "MAIN" "SKIP: ${SITE_NAME}: No wp-config.php found"
+            continue
+        fi
+
+        # Validate WordPress structure
+        if [[ ! -d "${WP_ROOT_PATH}" ]]; then
+            log "WARNING" "MAIN" "SKIP: ${SITE_NAME}: ${WP_ROOT_PATH} not a directory"
+            continue
+        fi
+
+        # Add to found sites
+        found_sites+=("${SITE_NAME}:${WP_ROOT_PATH}:${WP_CONFIG_PATH}")
+    done
+    
+    # Log excluded sites
+    if [[ ${#excluded_found[@]} -gt 0 ]]; then
+        log "INFO" "MAIN" "Excluded sites: ${excluded_found[*]}"
+    fi
+    
+    # Return found sites
+    printf '%s\n' "${found_sites[@]}"
+}
+
 # Function to safely extract values from wp-config.php
 # $1: Path to wp-config.php
 # $2: Define name (e.g., 'DB_NAME')
@@ -678,50 +749,27 @@ if [ ! -d "$TEMP_BACKUP_DIR" ]; then
     exit 1
 fi
 
-# Find all potential site directories (one level deep)
-for SITE_PATH in "$SITES_ROOT"/*/; do
-    [[ -d "$SITE_PATH" ]] || continue
-    SITE_DIRNAME=$(basename "$SITE_PATH")
-    
-    # Check INCLUDED_SITES filter (overrides EXCLUDED_SITES when set)
-    if [[ -n "$INCLUDED_SITES" ]]; then
-        # If INCLUDED_SITES is set, only process sites in that list
-        if [[ ! " ${INCLUDED_SITES_ARRAY[*]} " =~ " ${SITE_DIRNAME} " ]]; then
-            continue
-        fi
-    else
-        # If INCLUDED_SITES is empty, use EXCLUDED_SITES logic
-        if [[ " ${EXCLUDED_SITES_ARRAY[*]} " =~ " ${SITE_DIRNAME} " ]]; then
-            log "INFO" "MAIN" "Skipping excluded site: $SITE_DIRNAME"
-            continue
-        fi
-    fi
-    
-    WP_CONFIG_PATH="${SITE_PATH}/wp-config.php"
+# Discover WordPress sites with security checks
+mapfile -t WORDPRESS_SITES < <(find_wordpress_sites "$SITES_ROOT" "$EXCLUDED_SITES" "$INCLUDED_SITES")
 
-    # Check if the site is in the exclusion list
-    EXCLUDED=false
-    for EXCLUDED_SITE in "${EXCLUDED_SITES_ARRAY[@]}"; do
-        if [[ "$SITE_DIRNAME" == "$EXCLUDED_SITE" ]]; then
-            log "INFO" "MAIN" "Skipping excluded site: $SITE_DIRNAME"
-            EXCLUDED=true
-            break
-        fi
-    done
-    [[ "$EXCLUDED" == true ]] && continue
+if [[ ${#WORDPRESS_SITES[@]} -eq 0 ]]; then
+    log "INFO" "MAIN" "No WordPress sites found for backup"
+    exit 0
+fi
 
+log "INFO" "MAIN" "Found ${#WORDPRESS_SITES[@]} WordPress site(s) for backup"
+
+# Process each discovered WordPress site
+for SITE_INFO in "${WORDPRESS_SITES[@]}"; do
+    # Parse site information: SITE_NAME:WP_ROOT_PATH:WP_CONFIG_PATH
+    IFS=':' read -r SITE_DIRNAME SITE_PATH WP_CONFIG_PATH <<< "$SITE_INFO"
+    
     # Start site backup timing
     SITE_START=$(date +%s)
     
     log "INFO" "$SITE_DIRNAME" "Starting backup process"
-
-    # Check if wp-config.php exists
-    if [ ! -f "$WP_CONFIG_PATH" ]; then
-        log "WARNING" "$SITE_DIRNAME" "wp-config.php not found, skipping site"
-        continue
-    fi
-
-    log "INFO" "$SITE_DIRNAME" "Found wp-config.php, extracting database credentials"
+    log "INFO" "$SITE_DIRNAME" "WordPress root: $SITE_PATH"
+    log "INFO" "$SITE_DIRNAME" "Config file: $WP_CONFIG_PATH"
 
     # Extract and validate database credentials
     DB_NAME=$(get_wp_config_value "$WP_CONFIG_PATH" 'DB_NAME')

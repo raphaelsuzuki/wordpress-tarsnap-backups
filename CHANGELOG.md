@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2025-02-08
+
+### Security
+- **CRITICAL**: Added archive name validation in restore mode to prevent command injection attacks
+- **CRITICAL**: Enhanced config file permission checks to prevent world-readable configuration files
+- **CRITICAL**: Improved database credential validation with format-specific checks (DB_NAME, DB_USER, DB_HOST, DB_PASSWORD)
+- **CRITICAL**: Eliminated race conditions in temporary file creation by setting umask 077 before mktemp
+- Added site name validation in restore operations to prevent path traversal attacks
+- Enhanced `get_wp_config_value()` with strict format validation for each credential type
+- Improved temporary file security with defense-in-depth approach (umask + chmod)
+- All MySQL credential files now created with secure permissions from the start
+
+### Improved
+- Database host validation now includes port number support
+- Better error messages for invalid credentials and configuration
+- More robust input validation throughout restore workflow
+
 ## [1.5.0] - 2025-01-27
 
 ### Security

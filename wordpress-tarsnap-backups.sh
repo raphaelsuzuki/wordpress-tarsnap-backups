@@ -54,6 +54,13 @@ fi
 
 if [[ -n "$CONFIG_FILE" && -f "$CONFIG_FILE" ]]; then
     # Validate config file permissions for security
+    # Check that file is readable, not executable, and not world-readable
+    CONFIG_PERMS=$(stat -c %a "$CONFIG_FILE" 2>/dev/null || echo "000")
+    if [[ ! "$CONFIG_PERMS" =~ ^[0-7][0-7]0$ ]]; then
+        echo "Error: Configuration file '$CONFIG_FILE' is world-readable (permissions: $CONFIG_PERMS)"
+        echo "Fix with: chmod 640 '$CONFIG_FILE'"
+        exit 1
+    fi
     if [[ -r "$CONFIG_FILE" && ! -x "$CONFIG_FILE" ]]; then
         # shellcheck source=/dev/null
         source "$CONFIG_FILE"
@@ -137,6 +144,13 @@ restore_mode() {
         for i in $(seq $start $((end-1))); do
             [[ $i -ge ${#all_site_archives[@]} ]] && break
             archive="${all_site_archives[i]}"
+            
+            # Validate archive name format for security
+            if [[ ! "$archive" =~ ^[a-zA-Z0-9._-]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$ ]]; then
+                log "WARNING" "RESTORE" "Skipping invalid archive name: $archive"
+                continue
+            fi
+            
             if [[ "$archive" =~ -([0-9]{4})-([0-9]{2})-([0-9]{2})-([0-9]{6})$ ]]; then
                 date_str="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]:0:2}:${BASH_REMATCH[4]:2:2}:${BASH_REMATCH[4]:4:2}"
                 echo "$((i+1))) $archive ($date_str)"
@@ -205,9 +219,28 @@ restore_mode() {
 perform_restore() {
     local archive_name="$1"
     local site_name="$2"
+    
+    # Validate archive name to prevent command injection
+    if [[ ! "$archive_name" =~ ^[a-zA-Z0-9._-]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$ ]]; then
+        echo "ERROR: Invalid archive name format: $archive_name"
+        return 1
+    fi
+    
+    # Validate site name to prevent path traversal
+    if [[ ! "$site_name" =~ ^[a-zA-Z0-9._-]+$ ]] || [[ "$site_name" == "." ]] || [[ "$site_name" == ".." ]]; then
+        echo "ERROR: Invalid site name format: $site_name"
+        return 1
+    fi
+    
     local site_path="$SITES_ROOT/$site_name"
     local timestamp=$(date +%s)
-    local restore_dir=$(mktemp -d "${TEMP_BACKUP_DIR}/restore_${site_name}_${timestamp}_XXXXXX")
+    
+    # Create secure temporary directory with restrictive umask
+    OLD_UMASK=$(umask)
+    umask 077
+    local restore_dir=$(mktemp -d -p "$TEMP_BACKUP_DIR" "restore_${site_name}_${timestamp}_XXXXXX")
+    umask "$OLD_UMASK"
+    
     local backup_dir="${site_path}.backup.${timestamp}"
     local db_backup_file="${backup_dir}_database.sql"
     local restore_log="$LOG_DIR/restore_${site_name}_${timestamp}.log"
@@ -238,8 +271,10 @@ perform_restore() {
         db_host=${db_host:-localhost}
         
         # Create secure temp file for MySQL credentials
-        local mysql_test_opts=$(mktemp "${TEMP_BACKUP_DIR}/mysql_test_XXXXXX")
-        chmod 600 "$mysql_test_opts"
+        OLD_UMASK=$(umask)
+        umask 077
+        local mysql_test_opts=$(mktemp -p "$TEMP_BACKUP_DIR" "mysql_test_XXXXXX")
+        umask "$OLD_UMASK"
         {
             printf '[client]\n'
             printf 'user=%s\n' "$db_user"
@@ -290,8 +325,10 @@ perform_restore() {
         if [[ -n "$db_name" ]]; then
             restore_log "$restore_log" "Backing up existing database"
             # Create secure temp file for MySQL credentials
-            local mysql_backup_opts=$(mktemp "${TEMP_BACKUP_DIR}/mysql_backup_XXXXXX")
-            chmod 600 "$mysql_backup_opts"
+            OLD_UMASK=$(umask)
+            umask 077
+            local mysql_backup_opts=$(mktemp -p "$TEMP_BACKUP_DIR" "mysql_backup_XXXXXX")
+            umask "$OLD_UMASK"
             {
                 printf '[client]\n'
                 printf 'user=%s\n' "$db_user"
@@ -367,8 +404,10 @@ perform_restore() {
     new_db_host=${new_db_host:-localhost}
     
     # Create secure temp file for MySQL credentials
-    local mysql_restore_opts=$(mktemp "${TEMP_BACKUP_DIR}/mysql_restore_XXXXXX")
-    chmod 600 "$mysql_restore_opts"
+    OLD_UMASK=$(umask)
+    umask 077
+    local mysql_restore_opts=$(mktemp -p "$TEMP_BACKUP_DIR" "mysql_restore_XXXXXX")
+    umask "$OLD_UMASK"
     {
         printf '[client]\n'
         printf 'user=%s\n' "$new_db_user"
@@ -439,8 +478,10 @@ rollback_restore() {
         db_host=${db_host:-localhost}
         
         # Create secure temp file for MySQL credentials
-        local mysql_rollback_opts=$(mktemp "${TEMP_BACKUP_DIR}/mysql_rollback_XXXXXX")
-        chmod 600 "$mysql_rollback_opts"
+        OLD_UMASK=$(umask)
+        umask 077
+        local mysql_rollback_opts=$(mktemp -p "$TEMP_BACKUP_DIR" "mysql_rollback_XXXXXX")
+        umask "$OLD_UMASK"
         {
             printf '[client]\n'
             printf 'user=%s\n' "$db_user"
@@ -663,7 +704,34 @@ get_wp_config_value() {
            sed -n "s/.*define([[:space:]]*['\"]${define_name}['\"][[:space:]]*,[[:space:]]*['\"]\([^'\"]*\)['\"].*/\1/p" | 
            head -n 1)
     # Sanitize output - remove any shell metacharacters
-    printf '%s' "$value" | tr -d '`$(){}[]|&;<>'
+    value=$(printf '%s' "$value" | tr -d '`$(){}[]|&;<>')
+    
+    # Validate format based on define name
+    case "$define_name" in
+        DB_NAME|DB_USER)
+            # Database names and users should only contain alphanumeric, underscore, hyphen
+            if [[ ! "$value" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                echo "" # Return empty for invalid format
+                return 1
+            fi
+            ;;
+        DB_HOST)
+            # Host can be hostname, IP, or localhost with optional port
+            if [[ ! "$value" =~ ^[a-zA-Z0-9._-]+(:[0-9]+)?$ ]]; then
+                echo "" # Return empty for invalid format
+                return 1
+            fi
+            ;;
+        DB_PASSWORD)
+            # Password can contain most characters but validate length
+            if [[ ${#value} -gt 255 || ${#value} -eq 0 ]]; then
+                echo "" # Return empty for invalid length
+                return 1
+            fi
+            ;;
+    esac
+    
+    printf '%s' "$value"
 }
 
 # GFS Retention Function
@@ -777,37 +845,48 @@ for SITE_INFO in "${WORDPRESS_SITES[@]}"; do
     DB_PASSWORD=$(get_wp_config_value "$WP_CONFIG_PATH" 'DB_PASSWORD')
     DB_HOST=$(get_wp_config_value "$WP_CONFIG_PATH" 'DB_HOST')
 
-    # Validate extracted credentials
+    # Validate extracted credentials (validation now done in get_wp_config_value)
     if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" ]]; then
-        log "ERROR" "$SITE_DIRNAME" "Could not extract all required database credentials"
+        log "ERROR" "$SITE_DIRNAME" "Could not extract or validate database credentials"
         ((ERROR_COUNT++))
         ERROR_SITES+=("$SITE_DIRNAME: DB credentials")
-        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Could not extract database credentials from wp-config.php")
+        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Could not extract or validate database credentials from wp-config.php")
         continue
     fi
+
+    DB_HOST=${DB_HOST:-localhost}
     
-    # Validate credential format (basic sanity check)
-    if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_-]+$ ]] || [[ ! "$DB_USER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        log "ERROR" "$SITE_DIRNAME" "Invalid database name or user format"
+    # Additional validation for DB_HOST after default assignment
+    if [[ ! "$DB_HOST" =~ ^[a-zA-Z0-9._-]+(:[0-9]+)?$ ]]; then
+        log "ERROR" "$SITE_DIRNAME" "Invalid database host format: $DB_HOST"
         ((ERROR_COUNT++))
-        ERROR_SITES+=("$SITE_DIRNAME: Invalid DB format")
-        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Invalid database credentials format (DB: $DB_NAME, User: $DB_USER)")
-        continue
+        ERROR_SITES+=("$SITE_DIRNAME: Invalid DB host")
+        ERROR_DETAILS+=("$(date '+%Y-%m-%d %H:%M:%S') - $SITE_DIRNAME: Invalid database host format")
+        continuentinue
     fi
 
     DB_HOST=${DB_HOST:-localhost}
 
     log "INFO" "$SITE_DIRNAME" "Starting database dump for '$DB_NAME'"
 
-    # Create secure temporary files
+    # Create secure temporary files with restrictive umask
     DATE=$(date +%Y-%m-%d-%H%M%S)
     # Sanitize site dirname for filename
     SAFE_SITE_NAME=$(printf '%s' "$SITE_DIRNAME" | tr -cd '[:alnum:]._-')
-    DB_DUMP_FILE=$(mktemp "${TEMP_BACKUP_DIR}/${SAFE_SITE_NAME}_db_${DATE}_XXXXXX.sql")
-    MYSQL_CONN_OPTS=$(mktemp "${TEMP_BACKUP_DIR}/mysql_conn_XXXXXX")
+    
+    # Set restrictive umask before creating temp files to prevent race condition
+    OLD_UMASK=$(umask)
+    umask 077
+    
+    DB_DUMP_FILE=$(mktemp -p "$TEMP_BACKUP_DIR" "${SAFE_SITE_NAME}_db_${DATE}_XXXXXX.sql")
+    MYSQL_CONN_OPTS=$(mktemp -p "$TEMP_BACKUP_DIR" "mysql_conn_XXXXXX")
+    
+    # Restore original umask
+    umask "$OLD_UMASK"
+    
     TEMP_FILES+=("$DB_DUMP_FILE" "$MYSQL_CONN_OPTS")
     
-    # Set secure permissions on temp files
+    # Verify secure permissions were set (defense in depth)
     chmod 600 "$DB_DUMP_FILE" "$MYSQL_CONN_OPTS"
 
     # Securely write credentials to the temporary options file

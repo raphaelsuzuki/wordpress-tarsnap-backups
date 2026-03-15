@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WordPress Tarsnap Backups v1.5.0
+# WordPress Tarsnap Backups v1.5.1
 # Automated backup and restore solution for WordPress sites using Tarsnap
 #
 # Features:
@@ -66,12 +66,14 @@ if [[ -n "$CONFIG_FILE" && -f "$CONFIG_FILE" ]]; then
     if [[ -r "$CONFIG_FILE" && ! -x "$CONFIG_FILE" ]]; then
         # shellcheck source=/dev/null
         source "$CONFIG_FILE"
+        echo "Using configuration file: $CONFIG_FILE"
     else
         echo "Error: Configuration file '$CONFIG_FILE' has invalid permissions"
         exit 1
     fi
 else
     echo "Warning: No configuration file found, using defaults"
+    echo "Using default configuration (script defaults)"
 fi
 
 # Convert space-separated EXCLUDED_SITES, INCLUDED_SITES, and EXCLUDED_DIRECTORIES (directory patterns for backup exclusion) to arrays
@@ -577,6 +579,13 @@ log() {
     # Also output to console for cron log
     echo "$msg"
 }
+
+# Log which configuration is being used (file or defaults)
+if [[ -n "${CONFIG_FILE:-}" && -f "$CONFIG_FILE" ]]; then
+    log "INFO" "MAIN" "Using configuration file: $CONFIG_FILE"
+else
+    log "INFO" "MAIN" "Using default configuration (script defaults)"
+fi
 
 # Trap to clean up temporary files on exit or interruption
 DB_DUMP_FILE=""

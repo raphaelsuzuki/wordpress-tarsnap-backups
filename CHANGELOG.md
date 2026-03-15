@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic dependency checking (tarsnap, mysqldump)
 - Interactive configuration and cron setup
 - Support for both local and GitHub-based installation
+ - Log which configuration is used at startup (config file path or defaults)
+ - Bumped script header version to 1.5.1
 
 ## [1.6.0] - 2025-02-08
 
